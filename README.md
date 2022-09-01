@@ -13,11 +13,11 @@ Depending on what you are making, it can be a good idea to include screenshots o
 - pip install
 
 ## Usage
-- Via commandline: twistd -y webserver.py
-- Via PyCharm: Run / Debug... / select webserver.py
+- Via commandline: twistd -y main.py
+- Via PyCharm: Run / Debug... / select main.py
 
 ## Test
-- Start the webserver see Usage
+- Start the main see Usage
 - To test a POST, via commandline: python tests/test_post.py
 - To test a GET, open the browser and go to: http://localhost:8880/form
 
