@@ -19,7 +19,7 @@ Depending on what you are making, it can be a good idea to include screenshots o
 ## Test
 - Start the main see Usage
 - To test a POST, via commandline: python tests/test_post.py
-- To test a GET, open the browser and go to: http://localhost:8880/form
+- To test a GET, open the browser and go to: http://localhost:8880 or http://localhost:8880/main
 
 ## Support
 Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.

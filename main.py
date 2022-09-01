@@ -17,7 +17,8 @@ class FormPage(Resource):
 
 
 root = Resource()
-root.putChild(b"form", FormPage())
+root.putChild(b"", FormPage())
+root.putChild(b"main", FormPage())
 application = Application("My Web Service")
 factory = Site(root)
 reactor.listenTCP(8880, factory)
