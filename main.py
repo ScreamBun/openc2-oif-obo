@@ -18,6 +18,7 @@ class FormPage(Resource):
         return newdata
 
 
+print("Startup")
 root = Resource()
 root.putChild(b"", FormPage())
 root.putChild(b"main", FormPage())
@@ -25,3 +26,4 @@ application = Application("OBO Web Service")
 factory = Site(root)
 reactor.listenTCP(8880, factory)
 reactor.run()
+print("Reactor Running, listening on port 8880")
