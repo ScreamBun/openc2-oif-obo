@@ -13,7 +13,6 @@ class FormPage(Resource):
     def render_POST(self, request):
         pprint(request.__dict__)
         newdata = request.content.getvalue()
-        print(newdata)
         return newdata
 
 
