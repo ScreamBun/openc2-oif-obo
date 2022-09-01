@@ -21,7 +21,7 @@ class FormPage(Resource):
 root = Resource()
 root.putChild(b"", FormPage())
 root.putChild(b"main", FormPage())
-application = Application("My Web Service")
+application = Application("OBO Web Service")
 factory = Site(root)
 reactor.listenTCP(8880, factory)
 reactor.run()
