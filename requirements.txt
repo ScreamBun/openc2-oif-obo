@@ -5,6 +5,7 @@ Babel==2.10.3
 certifi==2022.6.15
 charset-normalizer==2.1.1
 constantly==15.1.0
+debugpy==1.6.3
 docutils==0.19
 httplib2==0.20.4
 hyperlink==21.0.0
@@ -29,6 +30,7 @@ sphinxcontrib-jsmath==1.0.1
 sphinxcontrib-qthelp==1.0.3
 sphinxcontrib-serializinghtml==1.1.5
 Twisted==22.4.0
+twisted-mqtt==0.3.9
 typing_extensions==4.3.0
 urllib3==1.26.12
 zope.interface==5.4.0
