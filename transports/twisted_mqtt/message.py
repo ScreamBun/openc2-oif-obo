@@ -1,8 +1,8 @@
-import threading
 import time
 
-from .enums import ErrorValues, MessageStates
-from .utils import error_string
+from threading import Condition
+from typing import NoReturn, Union
+from .utils import ErrorValues, MessageStates, error_string
 
 
 class MQTTMessageInfo:
@@ -11,51 +11,49 @@ class MQTTMessageInfo:
     out the mid of the message that was published, and to determine whether the
     message has been published, and/or wait until it is published.
     """
+    mid: int
+    _published: bool = False
+    _condition: Condition()
+    rc: int = 0
+    _iterpos: int = 0
 
-    __slots__ = 'mid', '_published', '_condition', 'rc', '_iterpos'
-
-    def __init__(self, mid):
+    def __init__(self, mid: int) -> None:
         self.mid = mid
-        self._published = False
-        self._condition = threading.Condition()
-        self.rc = 0
-        self._iterpos = 0
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str((self.rc, self.mid))
 
-    def __iter__(self):
+    def __iter__(self) -> "MQTTMessageInfo":
         self._iterpos = 0
         return self
 
-    def __next__(self):
+    def __next__(self) -> int:
         return self.next()
 
-    def next(self):
+    def next(self) -> int:
         if self._iterpos == 0:
             self._iterpos = 1
             return self.rc
-        elif self._iterpos == 1:
+        if self._iterpos == 1:
             self._iterpos = 2
             return self.mid
-        else:
-            raise StopIteration
+        raise StopIteration
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> int:
         if index == 0:
             return self.rc
-        elif index == 1:
+        if index == 1:
             return self.mid
-        else:
-            raise IndexError("index out of range")
+        raise IndexError("index out of range")
 
-    def _set_as_published(self):
+    def _set_as_published(self) -> NoReturn:
         with self._condition:
             self._published = True
             self._condition.notify()
 
-    def wait_for_publish(self, timeout=None):
-        """Block until the message associated with this object is published, or
+    def wait_for_publish(self, timeout: int = None) -> NoReturn:
+        """
+        Block until the message associated with this object is published, or
         until the timeout occurs. If timeout is None, this will never time out.
         Set timeout to a positive number of seconds, e.g. 1.2, to enable the
         timeout.
@@ -67,14 +65,15 @@ class MQTTMessageInfo:
         reason.
         """
         if self.rc == ErrorValues.QUEUE_SIZE:
-            raise ValueError('Message is not queued due to ERR_QUEUE_SIZE')
-        elif self.rc == ErrorValues.AGAIN:
+            raise ValueError("Message is not queued due to ERR_QUEUE_SIZE")
+        if self.rc == ErrorValues.AGAIN:
             pass
         elif self.rc > 0:
-            raise RuntimeError('Message publish failed: %s' % (error_string(self.rc)))
+            raise RuntimeError(f"Message publish failed: {error_string(self.rc)}")
 
         timeout_time = None if timeout is None else time.time() + timeout
         timeout_tenth = None if timeout is None else timeout / 10.
+
         def timed_out():
             return False if timeout is None else time.time() > timeout_time
 
@@ -82,61 +81,63 @@ class MQTTMessageInfo:
             while not self._published and not timed_out():
                 self._condition.wait(timeout_tenth)
 
-    def is_published(self):
-        """Returns True if the message associated with this object has been
-        published, else returns False."""
+    def is_published(self) -> bool:
+        """
+        Returns True if the message associated with this object has been published, else returns False.
+        """
         if self.rc == ErrorValues.QUEUE_SIZE:
-            raise ValueError('Message is not queued due to ERR_QUEUE_SIZE')
-        elif self.rc == ErrorValues.AGAIN:
+            raise ValueError("Message is not queued due to ERR_QUEUE_SIZE")
+        if self.rc == ErrorValues.AGAIN:
             pass
         elif self.rc > 0:
-            raise RuntimeError('Message publish failed: %s' % (error_string(self.rc)))
+            raise RuntimeError(f"Message publish failed: {error_string(self.rc)}")
 
         with self._condition:
             return self._published
 
 
 class MQTTMessage:
-    """ This is a class that describes an incoming or outgoing message. It is
+    """
+    This is a class that describes an incoming or outgoing message. It is
     passed to the on_message callback as the message parameter.
 
     Members:
-
-    topic : String. topic that the message was published on.
-    payload : Bytes/Byte array. the message payload.
-    qos : Integer. The message Quality of Service 0, 1 or 2.
-    retain : Boolean. If true, the message is a retained message and not fresh.
-    mid : Integer. The message id.
-    properties: Properties class. In MQTT v5.0, the properties associated with the message.
+        topic : String. topic that the message was published on.
+        payload : Bytes/Byte array. the message payload.
+        qos : Integer. The message Quality of Service 0, 1 or 2.
+        retain : Boolean. If true, the message is a retained message and not fresh.
+        mid : Integer. The message id.
+        properties: Properties class. In MQTT v5.0, the properties associated with the message.
     """
+    timestamp: int = 0
+    state: MessageStates = MessageStates.INVALID
+    dup: bool = False
+    mid: int
+    topic: bytes
+    payload: bytes = b""
+    qos: int = 0
+    retain: bool = False
+    info: MQTTMessageInfo
 
-    __slots__ = 'timestamp', 'state', 'dup', 'mid', '_topic', 'payload', 'qos', 'retain', 'info', 'properties'
-
-    def __init__(self, mid=0, topic=b""):
-        self.timestamp = 0
-        self.state = MessageStates.INVALID
-        self.dup = False
+    def __init__(self, mid: int = 0, topic: bytes = b""):
         self.mid = mid
         self._topic = topic
-        self.payload = b""
-        self.qos = 0
-        self.retain = False
         self.info = MQTTMessageInfo(mid)
 
-    def __eq__(self, other):
+    def __eq__(self, other: "MQTTMessage") -> bool:
         """Override the default Equals behavior"""
         if isinstance(other, self.__class__):
             return self.mid == other.mid
         return False
 
-    def __ne__(self, other):
+    def __ne__(self, other: "MQTTMessage") -> bool:
         """Define a non-equality test"""
         return not self.__eq__(other)
 
     @property
-    def topic(self):
-        return self._topic.decode('utf-8')
+    def topic(self) -> str:
+        return self._topic.decode("utf-8")
 
     @topic.setter
-    def topic(self, value):
-        self._topic = value
+    def topic(self, value: Union[bytes, str]) -> NoReturn:
+        self._topic = value.encode("utf-8") if isinstance(value, str) else value

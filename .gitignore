@@ -171,9 +171,9 @@ fabric.properties
 .history/
 
 # Custom Ignore
-.idea
 *.sqlite3
 migrations/*
+lint*.html
 
 # Add known good migrations
 !/consumer_server/*/migrations/__init__.py

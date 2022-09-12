@@ -1,15 +1,18 @@
+import json
 import sys
 
+from time import time
+from typing import Any
 from twisted.internet import reactor
-from twisted.internet.endpoints import clientFromString
 from twisted.logger import (
     Logger, LogLevel, FilteringLogObserver, LogLevelFilterPredicate, globalLogBeginner, textFileLogObserver,
 )
-from transports.twisted_mqtt import MQTTFactory, MQTTService, Versions
+from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, Versions
 
 logLevelFilterPredicate = LogLevelFilterPredicate(defaultLogLevel=LogLevel.info)
 BROKER = "tcp:mosquitto.olympus.mtn:1883"
 subs = [
+    ("oc2/cmd", 1),
     ("oc2/cmd/all", 1)
 ]
 
@@ -39,16 +42,43 @@ def setLogLevel(namespace=None, levelStr='info'):
     logLevelFilterPredicate.setLogLevelForNamespace(namespace=namespace, level=level)
 
 
+def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
+    """Callback Receiving messages from message"""
+    print(f"msg={message.payload}")
+    print(f"userdata={userdata}")
+    payload = {
+        "headers": {
+            "request_id": "bee2166a-caf3-45f6-975f-7c14f6c53356",
+            "created": round(time() * 1000),
+            "from": "Twisted1"
+        },
+        "body": {
+            "openc2": {
+                "response": {
+                    "status": 500,
+                    "status_text": "unknown actuator"
+                }
+            }
+        }
+    }
+    proto.publish("oc2/rsp", payload=json.dumps(payload))
+
+
 if __name__ == "__main__":
     log = Logger()
     startLogging()
-    setLogLevel(namespace='mqtt',     levelStr='debug')
+    setLogLevel(namespace='mqtt', levelStr='debug')
     setLogLevel(namespace='__main__', levelStr='debug')
 
     print("Startup")
-    factory = MQTTFactory(client_id="Twisted-368207455685", subs=subs, protocol=Versions.v5)
-    myEndpoint = clientFromString(reactor, BROKER)
-    serv = MQTTService(myEndpoint, factory)
-    serv.startService()
+    factory = MQTTFactory(
+        reactor=reactor,
+        host="mosquitto.olympus.mtn",
+        port=1883,
+        client_id="Twisted-368207455685",
+        subs=subs,
+        version=Versions.v5
+    )
+    factory.addCallback(onMessage, "on_message")
     print("Reactor Running")
     reactor.run()

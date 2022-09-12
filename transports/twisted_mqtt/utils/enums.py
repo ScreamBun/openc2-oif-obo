@@ -1,28 +1,23 @@
-import logging
-
 from enum import Enum
-from typing import Callable, Dict, Literal, Optional, Tuple, Union
-from twisted.logger import Logger
-
-log = Logger(namespace="mqtt")
+from typing import Union
 
 
 class EnumBase(Enum):
     @classmethod
-    def from_name(cls, fmt: str) -> 'EnumBase':
+    def from_name(cls, fmt: str) -> "EnumBase":
         name = fmt.upper()
         for k, v in dict(cls.__members__).items():
             if name == k.upper():
                 return v
-        raise ValueError(f'{name} is not a valid name')
+        raise ValueError(f"{name} is not a valid name")
 
     @classmethod
-    def from_value(cls, fmt: Union[int, str]) -> 'EnumBase':
+    def from_value(cls, fmt: Union[int, str]) -> "EnumBase":
         members = dict(cls.__members__)
         for k, v in members.items():
             if fmt == v:
                 return cls.__getattr__(k)
-        raise ValueError(f'{fmt} is not a valid value')
+        raise ValueError(f"{fmt} is not a valid value")
 
 
 class ConnectionStates(int, EnumBase):
@@ -74,19 +69,6 @@ class LogLevel(int, EnumBase):
     WARNING = 0x04
     ERR = 0x08
     DEBUG = 0x10
-    __pythonLevel__: Dict[int, Tuple[int, Callable[[Optional[str], Optional[object]], None]]] = {
-        DEBUG: (logging.DEBUG, log.debug),
-        INFO: (logging.INFO, log.info),
-        NOTICE: (logging.INFO, log.info),  # This has no direct equivalent level
-        WARNING: (logging.WARNING, log.warn),
-        ERR: (logging.ERROR, log.error)
-    }
-
-    def pythonLevel(self) -> Literal[logging.DEBUG, logging.INFO, logging.INFO, logging.WARNING, logging.ERROR]:
-        return self.__pythonLevel__.get(self)[0]
-
-    def logFunction(self) -> Callable[[Optional[str], Optional[object]], None]:
-        return self.__pythonLevel__.get(self)[1]
 
 
 class MessageStates(int, EnumBase):

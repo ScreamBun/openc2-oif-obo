@@ -7,10 +7,10 @@ __all__ = ["setupWebServer", "setupWebServerSSL"]
 
 
 class WebProtocol(Resource):
-    def getChild(self, name, request):
-        if name == '':
+    def getChild(self, path, request):
+        if path == '':
             return self
-        return super().getChild(name, request)
+        return super().getChild(path, request)
 
     def render_GET(self, request):
         # Do some work

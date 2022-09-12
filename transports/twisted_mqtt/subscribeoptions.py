@@ -1,6 +1,5 @@
-import sys
-
-from .exceptions import MQTTException
+from typing import Any, Literal
+from .utils import MQTTException
 
 
 class SubscribeOptions:
@@ -19,9 +18,16 @@ class SubscribeOptions:
                                 - RETAIN_DO_NOT_SEND: never send retained messages
     """
     # retain handling options
-    RETAIN_SEND_ON_SUBSCRIBE, RETAIN_SEND_IF_NEW_SUB, RETAIN_DO_NOT_SEND = range(0, 3)
+    RETAIN_SEND_ON_SUBSCRIBE = 0
+    RETAIN_SEND_IF_NEW_SUB = 1
+    RETAIN_DO_NOT_SEND = 2
+    names = ["QoS", "noLocal", "retainAsPublished", "retainHandling"]
+    QoS: int  # bits 0,1
+    noLocal: bool  # bit 2
+    retainAsPublished: bool  # bit 3
+    retainHandling: Literal[0, 1, 2]  # bits 4 and 5: 0, 1 or 2
 
-    def __init__(self, qos=0, noLocal=False, retainAsPublished=False, retainHandling=RETAIN_SEND_ON_SUBSCRIBE):
+    def __init__(self, qos: int = 0, noLocal: bool = False, retainAsPublished: bool = False, retainHandling: int = RETAIN_SEND_ON_SUBSCRIBE):
         """
         qos:                0, 1 or 2.  0 is the default.
         noLocal:            True or False. False is the default and corresponds to MQTT v3.1.1 behavior.
@@ -29,7 +35,6 @@ class SubscribeOptions:
         retainHandling:     RETAIN_SEND_ON_SUBSCRIBE, RETAIN_SEND_IF_NEW_SUB or RETAIN_DO_NOT_SEND
                             RETAIN_SEND_ON_SUBSCRIBE is the default and corresponds to MQTT v3.1.1 behavior.
         """
-        object.__setattr__(self, "names", ["QoS", "noLocal", "retainAsPublished", "retainHandling"])
         self.QoS = qos  # bits 0,1
         self.noLocal = noLocal  # bit 2
         self.retainAsPublished = retainAsPublished  # bit 3
@@ -37,44 +42,39 @@ class SubscribeOptions:
         assert self.QoS in [0, 1, 2]
         assert self.retainHandling in [0, 1, 2], "Retain handling should be 0, 1 or 2"
 
-    def __setattr__(self, name, value):
+    def __setattr__(self, name: str, value: Any) -> None:
         if name not in self.names:
             raise MQTTException(f"{name} Attribute name must be one of {str(self.names)}")
         object.__setattr__(self, name, value)
 
-    def pack(self):
-        assert self.QoS in [0, 1, 2]
-        assert self.retainHandling in [0, 1, 2], "Retain handling should be 0, 1 or 2"
-        noLocal = 1 if self.noLocal else 0
-        retainAsPublished = 1 if self.retainAsPublished else 0
-        data = [(self.retainHandling << 4) | (retainAsPublished << 3) | (noLocal << 2) | self.QoS]
-        if sys.version_info[0] >= 3:
-            buffer = bytes(data)
-        else:
-            buffer = bytearray(data)
-        return buffer
-
-    def unpack(self, buffer):
-        b0 = buffer[0]
-        self.retainHandling = ((b0 >> 4) & 0x03)
-        self.retainAsPublished = True if ((b0 >> 3) & 0x01) == 1 else False
-        self.noLocal = True if ((b0 >> 2) & 0x01) == 1 else False
-        self.QoS = (b0 & 0x03)
-        assert self.retainHandling in [0, 1, 2], f"Retain handling should be 0, 1 or 2, not {self.retainHandling}"
-        assert self.QoS in [0, 1, 2], f"QoS should be 0, 1 or 2, not {self.QoS}"
-        return 1
-
-    def __repr__(self):
+    def __repr__(self) -> str:
         return str(self)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{{QoS={str(self.QoS)}, noLocal={str(self.noLocal)}, retainAsPublished={str(self.retainAsPublished)}, retainHandling={str(self.retainHandling)}}}"
 
-    def json(self):
-        data = {
+    def json(self) -> dict:
+        return {
             "QoS": self.QoS,
             "noLocal": self.noLocal,
             "retainAsPublished": self.retainAsPublished,
             "retainHandling": self.retainHandling,
         }
-        return data
+
+    def pack(self) -> bytes:
+        assert self.QoS in [0, 1, 2]
+        assert self.retainHandling in [0, 1, 2], "Retain handling should be 0, 1 or 2"
+        noLocal = 1 if self.noLocal else 0
+        retainAsPublished = 1 if self.retainAsPublished else 0
+        data = [(self.retainHandling << 4) | (retainAsPublished << 3) | (noLocal << 2) | self.QoS]
+        return bytes(data)
+
+    def unpack(self, buffer) -> int:
+        b0 = buffer[0]
+        self.retainHandling = ((b0 >> 4) & 0x03)
+        self.retainAsPublished = ((b0 >> 3) & 0x01) == 1
+        self.noLocal = ((b0 >> 2) & 0x01) == 1
+        self.QoS = (b0 & 0x03)
+        assert self.retainHandling in [0, 1, 2], f"Retain handling should be 0, 1 or 2, not {self.retainHandling}"
+        assert self.QoS in [0, 1, 2], f"QoS should be 0, 1 or 2, not {self.QoS}"
+        return 1

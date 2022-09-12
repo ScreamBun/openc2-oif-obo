@@ -1,8 +1,11 @@
 import sys
 
-from .exceptions import MQTTException
+from typing import Any, NoReturn, Optional, Tuple, Union
 from .packettypes import PacketTypes
-from .utils import writeInt16, readInt16, writeInt32, readInt32, writeUTF, readUTF, writeBytes, readBytes
+from .utils import (
+    MQTTException,
+    writeInt16, readInt16, writeInt32, readInt32, writeUTF, readUTF, writeBytes, readBytes
+)
 
 
 class VariableByteIntegers:  # Variable Byte Integer
@@ -11,13 +14,13 @@ class VariableByteIntegers:  # Variable Byte Integer
     in several places in MQTT v5.0 properties.
     """
     @staticmethod
-    def encode(x):
+    def encode(x: int) -> bytes:
         """
         Convert an integer 0 <= x <= 268435455 into multi-byte format.
         Returns the buffer convered from the integer.
         """
         assert 0 <= x <= 268435455
-        buffer = b''
+        buffer = b""
         while 1:
             digit = x % 128
             x //= 128
@@ -32,7 +35,7 @@ class VariableByteIntegers:  # Variable Byte Integer
         return buffer
 
     @staticmethod
-    def decode(buffer):
+    def decode(buffer: bytes) -> Tuple[int, int]:
         """
         Get the value of a multi-byte integer from a buffer
         Return the value, and the number of bytes used.
@@ -41,19 +44,19 @@ class VariableByteIntegers:  # Variable Byte Integer
         """
         multiplier = 1
         value = 0
-        bytes = 0
+        byte_count = 0
         while 1:
-            bytes += 1
+            byte_count += 1
             digit = buffer[0]
             buffer = buffer[1:]
             value += (digit & 127) * multiplier
             if digit & 128 == 0:
                 break
             multiplier *= 128
-        return value, bytes
+        return value, byte_count
 
 
-class Properties(object):
+class Properties:
     """
     MQTT v5.0 properties class.
 
@@ -130,31 +133,20 @@ class Properties(object):
         41: (types.index("Byte"), [PacketTypes.CONNACK]),
         42: (types.index("Byte"), [PacketTypes.CONNACK]),
     }
+    packetType: Union[int, PacketTypes]
 
-    def __init__(self, packetType):
-        self.packetType = packetType
+    def __init__(self, packet: Union[int, PacketTypes]) -> None:
+        self.packetType = packet
 
-    def allowsMultiple(self, compressedName):
-        return self.getIdentFromName(compressedName) in [11, 38]
-
-    def getIdentFromName(self, compressedName):
-        # return the identifier corresponding to the property name
-        result = -1
-        for name in self.names.keys():
-            if compressedName == name.replace(' ', ''):
-                result = self.names[name]
-                break
-        return result
-
-    def __setattr__(self, name, value):
-        name = name.replace(' ', '')
+    def __setattr__(self, name: str, value: Any) -> NoReturn:
+        name = name.replace(" ", "")
         privateVars = ["packetType", "types", "names", "properties"]
         if name in privateVars:
             object.__setattr__(self, name, value)
         else:
             # the name could have spaces in, or not.  Remove spaces before assignment
-            if name not in [aname.replace(' ', '') for aname in self.names.keys()]:
-                raise MQTTException("Property name must be one of "+str(self.names.keys()))
+            if name not in [aname.replace(" ", "") for aname in self.names]:
+                raise MQTTException(f"Property name must be one of {list(self.names.keys())}")
             # check that this attribute applies to the packet type
             if self.packetType not in self.properties[self.getIdentFromName(name)][1]:
                 raise MQTTException(f"Property {name} does not apply to packet type {PacketTypes.Names[self.packetType]}")
@@ -167,7 +159,7 @@ class Properties(object):
                     raise MQTTException("{name} property value must be in the range 0-65535")
                 if name in ["MaximumPacketSize", "SubscriptionIdentifier"] and (value < 1 or value > 268435455):
                     raise MQTTException(f"{name} property value must be in the range 1-268435455")
-                if name in ["RequestResponseInformation", "RequestProblemInformation", "PayloadFormatIndicator"] and (value != 0 and value != 1):
+                if name in ["RequestResponseInformation", "RequestProblemInformation", "PayloadFormatIndicator"] and (value not in (0, 1)):
                     raise MQTTException(f"{name} property value must be 0 or 1")
 
             if self.allowsMultiple(name):
@@ -177,73 +169,85 @@ class Properties(object):
                     value = object.__getattribute__(self, name) + value
             object.__setattr__(self, name, value)
 
-    def __str__(self):
+    def __str__(self) -> str:
         buffer = "["
         first = True
-        for name in self.names.keys():
-            compressedName = name.replace(' ', '')
+        for name in self.names:
+            compressedName = name.replace(" ", "")
             if hasattr(self, compressedName):
                 if not first:
                     buffer += ", "
-                buffer += compressedName + " : " + str(getattr(self, compressedName))
+                buffer += f"{compressedName} : {getattr(self, compressedName)}"
                 first = False
         buffer += "]"
         return buffer
 
-    def json(self):
+    def allowsMultiple(self, compressedName: str) -> bool:
+        return self.getIdentFromName(compressedName) in [11, 38]
+
+    def getIdentFromName(self, compressedName: str) -> int:
+        # return the identifier corresponding to the property name
+        result = -1
+        for name, value in self.names.items():
+            if compressedName == name.replace(" ", ""):
+                result = value
+                break
+        return result
+
+    def json(self) -> dict:
         data = {}
-        for name in self.names.keys():
-            compressedName = name.replace(' ', '')
+        for name in self.names:
+            compressedName = name.replace(" ", "")
             if hasattr(self, compressedName):
                 val = getattr(self, compressedName)
-                if compressedName == 'CorrelationData' and isinstance(val, bytes):
+                if compressedName == "CorrelationData" and isinstance(val, bytes):
                     data[compressedName] = val.hex()
                 else:
                     data[compressedName] = val
         return data
 
-    def isEmpty(self):
+    def isEmpty(self) -> bool:
         rc = True
-        for name in self.names.keys():
-            compressedName = name.replace(' ', '')
+        for name in self.names:
+            compressedName = name.replace(" ", "")
             if hasattr(self, compressedName):
                 rc = False
                 break
         return rc
 
-    def clear(self):
-        for name in self.names.keys():
-            compressedName = name.replace(' ', '')
+    def clear(self) -> NoReturn:
+        for name in self.names:
+            compressedName = name.replace(" ", "")
             if hasattr(self, compressedName):
                 delattr(self, compressedName)
 
-    def writeProperty(self, identifier, type, value):
+    def writeProperty(self, identifier: int, type_: int, value: Union[bytes, int]) -> bytes:
         buffer = b""
         buffer += VariableByteIntegers.encode(identifier)  # identifier
-        if type == self.types.index("Byte"):  # value
+        if type_ == self.types.index("Byte"):  # value
             if sys.version_info[0] < 3:
                 buffer += chr(value)
             else:
                 buffer += bytes([value])
-        elif type == self.types.index("Two Byte Integer"):
+        elif type_ == self.types.index("Two Byte Integer"):
             buffer += writeInt16(value)
-        elif type == self.types.index("Four Byte Integer"):
+        elif type_ == self.types.index("Four Byte Integer"):
             buffer += writeInt32(value)
-        elif type == self.types.index("Variable Byte Integer"):
+        elif type_ == self.types.index("Variable Byte Integer"):
             buffer += VariableByteIntegers.encode(value)
-        elif type == self.types.index("Binary Data"):
+        elif type_ == self.types.index("Binary Data"):
             buffer += writeBytes(value)
-        elif type == self.types.index("UTF-8 Encoded String"):
+        elif type_ == self.types.index("UTF-8 Encoded String"):
             buffer += writeUTF(value)
-        elif type == self.types.index("UTF-8 String Pair"):
+        elif type_ == self.types.index("UTF-8 String Pair"):
             buffer += writeUTF(value[0]) + writeUTF(value[1])
         return buffer
 
-    def pack(self):
+    def pack(self) -> bytes:
         # serialize properties into buffer for sending over network
         buffer = b""
-        for name in self.names.keys():
-            compressedName = name.replace(' ', '')
+        for name in self.names:
+            compressedName = name.replace(" ", "")
             if hasattr(self, compressedName):
                 identifier = self.getIdentFromName(compressedName)
                 attr_type = self.properties[identifier][0]
@@ -254,23 +258,25 @@ class Properties(object):
                     buffer += self.writeProperty(identifier, attr_type, getattr(self, compressedName))
         return VariableByteIntegers.encode(len(buffer)) + buffer
 
-    def readProperty(self, buffer, type, propslen):
-        if type == self.types.index("Byte"):
+    def readProperty(self, buffer: bytes, type_: int, propslen: int) -> Tuple[bytes, int]:
+        value = b""
+        valuelen = 0
+        if type_ == self.types.index("Byte"):
             value = buffer[0]
             valuelen = 1
-        elif type == self.types.index("Two Byte Integer"):
+        elif type_ == self.types.index("Two Byte Integer"):
             value = readInt16(buffer)
             valuelen = 2
-        elif type == self.types.index("Four Byte Integer"):
+        elif type_ == self.types.index("Four Byte Integer"):
             value = readInt32(buffer)
             valuelen = 4
-        elif type == self.types.index("Variable Byte Integer"):
+        elif type_ == self.types.index("Variable Byte Integer"):
             value, valuelen = VariableByteIntegers.decode(buffer)
-        elif type == self.types.index("Binary Data"):
+        elif type_ == self.types.index("Binary Data"):
             value, valuelen = readBytes(buffer)
-        elif type == self.types.index("UTF-8 Encoded String"):
+        elif type_ == self.types.index("UTF-8 Encoded String"):
             value, valuelen = readUTF(buffer, propslen)
-        elif type == self.types.index("UTF-8 String Pair"):
+        elif type_ == self.types.index("UTF-8 String Pair"):
             value, valuelen = readUTF(buffer, propslen)
             buffer = buffer[valuelen:]  # strip the bytes used by the value
             value1, valuelen1 = readUTF(buffer, propslen - valuelen)
@@ -278,16 +284,14 @@ class Properties(object):
             valuelen += valuelen1
         return value, valuelen
 
-    def getNameFromIdent(self, identifier):
+    def getNameFromIdent(self, identifier: int) -> Optional[str]:
         rc = None
-        for name in self.names:
-            if self.names[name] == identifier:
+        for name, value in self.names.items():
+            if value == identifier:
                 rc = name
         return rc
 
-    def unpack(self, buffer):
-        if sys.version_info[0] < 3:
-            buffer = bytearray(buffer)
+    def unpack(self, buffer: bytes) -> Tuple["Properties", int]:
         self.clear()
         # deserialize properties into attributes from buffer received from network
         propslen, VBIlen = VariableByteIntegers.decode(buffer)
@@ -302,7 +306,7 @@ class Properties(object):
             buffer = buffer[valuelen:]  # strip the bytes used by the value
             propslenleft -= valuelen
             propname = self.getNameFromIdent(identifier)
-            compressedName = propname.replace(' ', '')
+            compressedName = propname.replace(" ", "")
             if not self.allowsMultiple(compressedName) and hasattr(self, compressedName):
                 raise MQTTException(f"Property '{property}' must not exist more than once")
             setattr(self, propname, value)

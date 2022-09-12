@@ -6,7 +6,3 @@ class MQTTException(Exception):
 
 class MalformedPacket(MQTTException):
     pass
-
-
-class WebsocketConnectionError(ValueError):
-    pass

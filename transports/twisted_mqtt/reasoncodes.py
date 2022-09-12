@@ -1,12 +1,10 @@
-import sys
-
+from typing import NoReturn, Union
 from .packettypes import PacketTypes
 
 
 class ReasonCodes:
     """
     MQTT version 5.0 reason codes class.
-
     See ReasonCodes.names for a list of possible numeric values along with their
     names and the packets to which they apply.
     """
@@ -59,73 +57,32 @@ class ReasonCodes:
         161: {"Subscription identifiers not supported": [PacketTypes.SUBACK, PacketTypes.DISCONNECT]},
         162: {"Wildcard subscription not supported": [PacketTypes.SUBACK, PacketTypes.DISCONNECT]}
     }
+    packetType: Union[int, PacketTypes]
 
-    def __init__(self, packetType, aName="Success", identifier=-1):
+    def __init__(self, packet: Union[int, PacketTypes], name: str = "Success", identifier: int = -1) -> None:
         """
         packetType: the type of the packet, such as PacketTypes.CONNECT that
             this reason code will be used with.  Some reason codes have different
             names for the same identifier when used a different packet type.
 
-        aName: the String name of the reason code to be created.  Ignored
+        name: the String name of the reason code to be created.  Ignored
             if the identifier is set.
 
         identifier: an integer value of the reason code to be created.
         """
-        self.packetType = packetType
+        self.packetType = packet
         if identifier == -1:
-            if packetType == PacketTypes.DISCONNECT and aName == "Success":
-                aName = "Normal disconnection"
-            self.set(aName)
+            if packet == PacketTypes.DISCONNECT and name == "Success":
+                name = "Normal disconnection"
+            self.set(name)
         else:
             self.value = identifier
             self.getName()  # check it's good
 
-    def __getName__(self, packetType, identifier):
-        """
-        Get the reason code string name for a specific identifier.
-        The name can vary by packet type for the same identifier, which
-        is why the packet type is also required.
+    def __str__(self) -> str:
+        return self.getName()
 
-        Used when displaying the reason code.
-        """
-        assert identifier in self.names.keys(), identifier
-        names = self.names[identifier]
-        namelist = [name for name in names.keys() if packetType in names[name]]
-        assert len(namelist) == 1
-        return namelist[0]
-
-    def getId(self, name):
-        """
-        Get the numeric id corresponding to a reason code name.
-
-        Used when setting the reason code for a packetType
-        check that only valid codes for the packet are set.
-        """
-        identifier = None
-        for code in self.names.keys():
-            if name in self.names[code].keys():
-                if self.packetType in self.names[code][name]:
-                    identifier = code
-                break
-        assert identifier is not None, name
-        return identifier
-
-    def set(self, name):
-        self.value = self.getId(name)
-
-    def unpack(self, buffer):
-        c = buffer[0]
-        if sys.version_info[0] < 3:
-            c = ord(c)
-        name = self.__getName__(self.packetType, c)
-        self.value = self.getId(name)
-        return 1
-
-    def getName(self):
-        """Returns the reason code name corresponding to the numeric value which is set"""
-        return self.__getName__(self.packetType, self.value)
-
-    def __eq__(self, other):
+    def __eq__(self, other: "ReasonCodes") -> bool:
         if isinstance(other, int):
             return self.value == other
         if isinstance(other, str):
@@ -134,8 +91,46 @@ class ReasonCodes:
             return self.value == other.value
         return False
 
-    def __str__(self):
-        return self.getName()
+    def __getName__(self, packet: PacketTypes, identifier: int) -> str:
+        """
+        Get the reason code string name for a specific identifier.
+        The name can vary by packet type for the same identifier, which is why the packet type is also required.
+        Used when displaying the reason code.
+        """
+        assert identifier in self.names, identifier
+        names = self.names[identifier]
+        namelist = [name for name, values in names.items() if packet in values]
+        assert len(namelist) == 1
+        return namelist[0]
+
+    def getId(self, name: str) -> int:
+        """
+        Get the numeric id corresponding to a reason code name.
+        Used when setting the reason code for a packetType check that only valid codes for the packet are set.
+        """
+        identifier = None
+        for code, values in self.names.items():
+            if name in values:
+                if self.packetType in values[name]:
+                    identifier = code
+                break
+        assert identifier is not None, name
+        return identifier
+
+    def set(self, name: str) -> NoReturn:
+        self.value = self.getId(name)
+
+    def unpack(self, buffer: bytes) -> int:
+        c = buffer[0]
+        name = self.__getName__(self.packetType, c)
+        self.value = self.getId(name)
+        return 1
+
+    def getName(self) -> str:
+        """
+        Returns the reason code name corresponding to the numeric value which is set
+        """
+        return self.__getName__(self.packetType, self.value)
 
     def json(self):
         return self.getName()
