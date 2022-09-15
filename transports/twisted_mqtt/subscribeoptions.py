@@ -5,7 +5,6 @@ from .utils import MQTTException
 class SubscribeOptions:
     """
     The MQTT v5.0 subscribe options class.
-
     The options are:
         qos:                As in MQTT v3.1.1.
         noLocal:            True or False. If set to True, the subscriber will not receive its own publications.
@@ -27,7 +26,7 @@ class SubscribeOptions:
     retainAsPublished: bool  # bit 3
     retainHandling: Literal[0, 1, 2]  # bits 4 and 5: 0, 1 or 2
 
-    def __init__(self, qos: int = 0, noLocal: bool = False, retainAsPublished: bool = False, retainHandling: int = RETAIN_SEND_ON_SUBSCRIBE):
+    def __init__(self, qos: int = 0, noLocal: bool = False, retainAsPublished: bool = False, retainHandling: Literal[0, 1, 2] = RETAIN_SEND_ON_SUBSCRIBE):
         """
         qos:                0, 1 or 2.  0 is the default.
         noLocal:            True or False. False is the default and corresponds to MQTT v3.1.1 behavior.
@@ -42,24 +41,16 @@ class SubscribeOptions:
         assert self.QoS in [0, 1, 2]
         assert self.retainHandling in [0, 1, 2], "Retain handling should be 0, 1 or 2"
 
-    def __setattr__(self, name: str, value: Any) -> None:
+    def __setattr__(self, name: str, value: Any):
         if name not in self.names:
-            raise MQTTException(f"{name} Attribute name must be one of {str(self.names)}")
+            raise MQTTException(f"{name} Attribute name must be one of {self.names}")
         object.__setattr__(self, name, value)
 
-    def __repr__(self) -> str:
+    def __repr__(self):
         return str(self)
 
-    def __str__(self) -> str:
-        return f"{{QoS={str(self.QoS)}, noLocal={str(self.noLocal)}, retainAsPublished={str(self.retainAsPublished)}, retainHandling={str(self.retainHandling)}}}"
-
-    def json(self) -> dict:
-        return {
-            "QoS": self.QoS,
-            "noLocal": self.noLocal,
-            "retainAsPublished": self.retainAsPublished,
-            "retainHandling": self.retainHandling,
-        }
+    def __str__(self):
+        return f"{{QoS={self.QoS}, noLocal={self.noLocal}, retainAsPublished={self.retainAsPublished}, retainHandling={self.retainHandling}}}"
 
     def pack(self) -> bytes:
         assert self.QoS in [0, 1, 2]
@@ -78,3 +69,11 @@ class SubscribeOptions:
         assert self.retainHandling in [0, 1, 2], f"Retain handling should be 0, 1 or 2, not {self.retainHandling}"
         assert self.QoS in [0, 1, 2], f"QoS should be 0, 1 or 2, not {self.QoS}"
         return 1
+
+    def json(self) -> dict:
+        return {
+            "QoS": self.QoS,
+            "noLocal": self.noLocal,
+            "retainAsPublished": self.retainAsPublished,
+            "retainHandling": self.retainHandling,
+        }

@@ -3,23 +3,25 @@ import struct
 import uuid
 
 from collections import OrderedDict, deque
-from dataclasses import fields
+from dataclasses import asdict
 from typing import Any, Callable, Deque, List, Literal, NoReturn, Optional, Tuple, Union
 from twisted.internet.endpoints import TCP4ClientEndpoint, TCP6ClientEndpoint
 from twisted.internet.protocol import Protocol, connectionDone
 from twisted.internet.task import LoopingCall
-from twisted.logger import Logger
+from twisted.logger import Logger, LogLevel
 from twisted.python.failure import Failure
-from .consts import MQTT_CLEAN_START_FIRST_ONLY, MQTT_BRIDGE
+from .consts import MQTT_CLEAN_START_FIRST_ONLY
 from .matcher import MQTTMatcher
 from .message import MQTTMessage, MQTTMessageInfo
 from .properties import Properties
 from .reasoncodes import ReasonCodes
 from .subscribeoptions import SubscribeOptions
 from .utils import (
-    ConnAckCodes, ConnectionStates, ErrorValues, MessageStates, Versions, MessageTypes,
-    Callbacks, InPacket, OutPacket,
-    filter_wildcard_len_check, topic_wildcard_len_check
+    ConnAckCodes, ConnectionStates, ErrorValues, LogLevels, MessageStates, MessageTypes, Transports, Versions,  # Enums
+    DummyLock,  # Contexts
+    InPacket, OutPacket,  # Dataclasses
+    CallbackMixin,  # Mixins
+    base62, filter_wildcard_len_check, topic_wildcard_len_check  # Utils
 )
 
 try:
@@ -28,98 +30,126 @@ try:
 except AttributeError:
     time_func = time.time
 
+# Types
+OnMessageCallback = Callable[["MQTTProtocol", Any, MQTTMessage], NoReturn]
+Payload = Union[bytes, bytearray, int, float, str]
+QOS = Literal[0, 1, 2]
+Subscriptions = List[Tuple[str, Literal[0, 1, 2]]]
+TopicSubscription = Union[
+    str,
+    Tuple[Union[str, List[str]], int],
+    Tuple[Union[str, List[str]], SubscribeOptions]  # MQTTv5
+]
 
-# Vars
-SUBSCRIPTIONS = List[Tuple[str, Literal[0, 1, 2]]]
-OnMessageCallback = Callable[["MQTTProtocol", Any, "MQTTMessage"], NoReturn]
-log = Logger(namespace="mqtt")
 
-
-class MQTTProtocol(Protocol):
+class MQTTProtocol(CallbackMixin, Protocol):
     factory: "MQTTFactory"
     addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]
     broker: str
+    _transport: Transports
     _protocol: Versions
-    _clean_session: bool
     _userdata: Any
     _client_id: bytes
-    _client_mode: Literal[0, 1]
-    # MQTT
-    _initialTimeout: int
-    _window: int
-    _subs: SUBSCRIPTIONS = []
     # Connection
-    _state: ConnectionStates
-    _connect_properties: Properties = None
     _keepalive: int = 60
-    _pingLoop: LoopingCall
-    # Auth
+    _connect_timeout: float = 5.0
+    _clean_session: bool
+    _clean_start: int
+    _connect_properties: Optional[Properties] = None
+    # Authentication & Security
     _username: bytes = None
     _password: bytes = None
-    # Packet processing
-    _on_message_filtered = MQTTMatcher()
-    _in_packet: InPacket = InPacket()
-    _out_packet: Deque[OutPacket] = deque()
-    _in_messages: OrderedDict = OrderedDict()
-    _out_messages: OrderedDict = OrderedDict()
+    # Packet Processing
+    _in_packet: InPacket
+    _out_packet: Deque[OutPacket]
     _last_msg_in: float
     _last_msg_out: float
+    _ping_t: float
+    _pingLoop: LoopingCall
+    _last_mid: int = 0
+    _state: ConnectionStates
+    _out_messages: OrderedDict
+    _in_messages: OrderedDict
     _max_inflight_messages: int = 20
     _inflight_messages: int = 0
     _max_queued_messages: int = 0
     # _queued_messages: int = 0
+    _on_message_filtered: MQTTMatcher
     # Will
-    _will_properties: Properties = None
+    _will_properties: Optional[Properties] = None
     _will: bool = False
     _will_topic: bytes = b""
     _will_payload: bytes = b""
-    _will_qos: Literal[0, 1, 2] = 0
+    _will_qos: QOS = 0
     _will_retain: bool = False
-    # Callbacks
-    _callbacks: Callbacks = Callbacks()
-    suppress_exceptions: bool = False  # For callbacks
+    # Mutex/Locks
+    _in_callback_mutex: DummyLock = DummyLock()
+    _callback_mutex: DummyLock = DummyLock()
+    _msgtime_mutex: DummyLock = DummyLock()
+    _out_message_mutex: DummyLock = DummyLock()
+    _in_message_mutex: DummyLock = DummyLock()
+    _reconnect_delay_mutex: DummyLock = DummyLock()
+    _mid_generate_mutex: DummyLock = DummyLock()
+    # Logging
+    _logger: Optional[Logger] = Logger(namespace="mqtt")
     # Assorted
-    _last_mid: int = 0
-    # for clean_start == MQTT_CLEAN_START_FIRST_ONLY
-    _mqttv5_first_connect: bool = True
-    # Consts
-    MAX_WINDOW = 16  # Max value of in-flight PUBLISH/SUBSCRIBE/UNSUBSCRIBE
-    TIMEOUT_INITIAL = 4  # Initial timeout for retransmissions
-    TIMEOUT_MAX_INITIAL = 1024  # Maximum value for initial timeout
+    _subs: Subscriptions = []
+    _mqttv5_first_connect: bool = True  # for clean_start == MQTT_CLEAN_START_FIRST_ONLY
+    suppress_exceptions: bool = False  # For callbacks
 
     def __init__(self, factory: "MQTTFactory", addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]) -> None:
         self.factory = factory
         self.addr = addr
         self.broker = f"mqtt://{addr.host}:{addr.port}"
-        self._state = ConnectionStates.NEW
+        # self._transport = self.factory._transport
         self._protocol = self.factory._version
         self._userdata = self.factory._userdata
         self._client_id = self.factory._client_id
-        self._subs = self.factory._subs
-        self._callbacks = self.factory._callbacks
-        self._clean_session = self.factory._clean_session
-        self._client_mode = self.factory._client_mode
-        self._clean_start = MQTT_CLEAN_START_FIRST_ONLY
+
+        self._in_packet = InPacket(
+            command=0,
+            have_remaining=0,
+            remaining_count=[],
+            remaining_mult=1,
+            remaining_length=0,
+            packet=bytearray(b""),
+            pos=0
+        )
+        self._out_packet = deque()
+        self._last_msg_in = time_func()
+        self._last_msg_out = time_func()
+        self._state = ConnectionStates.NEW
+        self._out_messages = OrderedDict()
+        self._in_messages = OrderedDict()
+        self._on_message_filtered = MQTTMatcher()
         self._pingLoop = LoopingCall(self._send_pingreq)
+
+        # Copy properties from factory
+        self._subs = self.factory._subs
+        self._clean_session = self.factory._clean_session
+        self._clean_start = MQTT_CLEAN_START_FIRST_ONLY
+        for field, val in asdict(self.factory._callbacks).items():
+            if val:
+                setattr(self, field, val)
 
     # Twisted Interface
     def connectionMade(self) -> NoReturn:
         try:
             yield self.connect()
         except Exception as err:
-            log.error("Connecting to {broker} raised {excp!s}", broker=self.broker, excp=err)
+            self._easy_log(LogLevels.ERR, "Connecting to {} raised {!s}", self.broker, err)
             raise err
         else:
-            log.info("Connected to {broker}", broker=self.broker)
+            self._easy_log(LogLevels.INFO, "Connected to {}", self.broker)
 
     def connectionLost(self, reason: Failure = connectionDone) -> NoReturn:
-        log.debug(f"--- Connection to MQTT Broker lost: {reason.getErrorMessage()}")
+        self._easy_log(LogLevels.DEBUG, "--- Connection to MQTT Broker lost: {}", reason.getErrorMessage())
         if self._pingLoop.running:
             self._pingLoop.stop()
         self.connect()
 
     def dataReceived(self, data: bytes) -> ErrorValues:
-        # log.debug("Received: bits={data_len} - `{data}`", data_len=len(data), data=data)
+        # self._easy_log(LogLevels.DEBUG, "Received: bits={} - `{}`", len(data), data)
         if self._in_packet.command == 0:
             if len(data) == 0:
                 return ErrorValues.CONN_LOST
@@ -130,103 +160,20 @@ class MQTTProtocol(Protocol):
         rc = self._packet_handle()
         # Free data and reset values
         self._in_packet = InPacket(
-            command=MessageTypes.NEW,
+            command=0,
             remaining_length=0,
             packet=bytearray(b""),
             pos=0
         )
         self._last_msg_in = time_func()
         if rc != ErrorValues.SUCCESS:
-            log.debug("Process error: {rc} -> {msg}", rc=rc, msg=rc.name)
+            self._easy_log(LogLevels.DEBUG, "Process error: {} -> {}", rc, rc.name)
             return rc
         return ErrorValues.SUCCESS
 
-    def doConnect(self, keepalive: int = 60) -> ErrorValues:
-        proto_ver = self._protocol
-        # hard-coded UTF-8 encoded string
-        protocol = b"MQTT" if proto_ver >= Versions.v311 else b"MQIsdp"
-        remaining_length = 2 + len(protocol) + 1 + 1 + 2 + 2 + len(self._client_id)
-        connect_flags = 0
-        if self._protocol == Versions.v5:
-            if self._clean_start is True:
-                connect_flags |= 0x02
-            elif self._clean_start == MQTT_CLEAN_START_FIRST_ONLY and self._mqttv5_first_connect:
-                connect_flags |= 0x02
-        elif self._clean_session:
-            connect_flags |= 0x02
-
-        if self._will:
-            remaining_length += 2 + len(self._will_topic) + 2 + len(self._will_payload)
-            connect_flags |= 0x04 | ((self._will_qos & 0x03) << 3) | ((self._will_retain & 0x01) << 5)
-
-        if self._username is not None:
-            remaining_length += 2 + len(self._username)
-            connect_flags |= 0x80
-            if self._password is not None:
-                connect_flags |= 0x40
-                remaining_length += 2 + len(self._password)
-
-        packed_connect_properties = b""
-        packed_will_properties = b""
-        if self._protocol == Versions.v5:
-            if self._connect_properties is None:
-                packed_connect_properties = b"\x00"
-            else:
-                packed_connect_properties = self._connect_properties.pack()
-            remaining_length += len(packed_connect_properties)
-            if self._will:
-                if self._will_properties is None:
-                    packed_will_properties = b"\x00"
-                else:
-                    packed_will_properties = self._will_properties.pack()
-                remaining_length += len(packed_will_properties)
-
-        command = MessageTypes.CONNECT
-        packet = bytearray()
-        packet.append(command)
-        # as per the mosquitto broker, if the MSB of this version is set
-        # to 1, then it treats the connection as a bridge
-        if self._client_mode == MQTT_BRIDGE:
-            proto_ver |= 0x80
-
-        self._pack_remaining_length(packet, remaining_length)
-        packet.extend(struct.pack("!H" + str(len(protocol)) + "sBBH", len(protocol), protocol, proto_ver, connect_flags, keepalive))
-        if self._protocol == Versions.v5:
-            packet += packed_connect_properties
-
-        self._pack_str16(packet, self._client_id)
-        if self._will:
-            if self._protocol == Versions.v5:
-                packet += packed_will_properties
-            self._pack_str16(packet, self._will_topic)
-            self._pack_str16(packet, self._will_payload)
-
-        if self._username is not None:
-            self._pack_str16(packet, self._username)
-            if self._password is not None:
-                self._pack_str16(packet, self._password)
-
-        self._keepalive = keepalive
-        log_args = {
-            "u": (connect_flags & 0x80) >> 7,
-            "p": (connect_flags & 0x40) >> 6,
-            "wr": (connect_flags & 0x20) >> 5,
-            "wq": (connect_flags & 0x18) >> 3,
-            "wf": (connect_flags & 0x4) >> 2,
-            "c": (connect_flags & 0x2) >> 1,
-            "k": keepalive,
-            "id": self._client_id
-        }
-        if self._protocol == Versions.v5:
-            log.debug("Sending CONNECT (u{u}, p{p}, wr{wr}, wq{wq}, wf{wf}, c{c}, k{k}) client_id={id} properties={props}", **log_args, props=self._connect_properties)
-        else:
-            log.debug("Sending CONNECT (u{u}, p{p}, wr{wr}, wq{wq}, wf{wf}, c{c}, k{k}) client_id={id}", **log_args)
-        return self._packet_queue(command, packet, 0, 0)
-
     # MQTT Interface
-    def connect(self, clean_start=MQTT_CLEAN_START_FIRST_ONLY, properties=None) -> NoReturn:
-        """API Entry Point"""
-        log.debug(f"--- Connect to MQTT Broker {self.addr} with {self._protocol.name}")
+    def connect(self, clean_start: int = MQTT_CLEAN_START_FIRST_ONLY, properties: Optional[Properties] = None) -> NoReturn:
+        self._easy_log(LogLevels.DEBUG, "--- Connect to MQTT Broker {} with {}", self.addr, self._protocol.name)
         if self._protocol == Versions.v5:
             self._mqttv5_first_connect = True
         else:
@@ -234,29 +181,17 @@ class MQTTProtocol(Protocol):
                 raise ValueError("Clean start only applies to MQTT V5")
             if properties is not None:
                 raise ValueError("Properties only apply to MQTT V5")
-        self.doConnect()
+        self._send_connect(self._keepalive)
         for sub in self._subs:
             self.subscribe(*sub)
         self._pingLoop.start(self._keepalive, now=False)
 
-    def setTimeout(self, timeout: int) -> NoReturn:
-        """API Entry Point"""
-        if not 1 <= timeout <= self.TIMEOUT_MAX_INITIAL:
-            raise ValueError(timeout)
-        self._initialTimeout = timeout
-
-    def setWindowSize(self, size: int) -> NoReturn:
-        """API Entry Point"""
-        if not 0 < size <= self.MAX_WINDOW:
-            raise ValueError(f"Invalid window size of {size}")
-        self._window = min(size, self.MAX_WINDOW)
-
-    def publish(self, topic: Union[bytes, str], payload: Union[bytes, bytearray, int, float, str, None], qos: int = 0, retain: bool = False, properties: Properties = None) -> MQTTMessageInfo:
+    def publish(self, topic: str, payload: Payload = None, qos: QOS = 0, retain: bool = False, properties: Optional[Properties] = None) -> MQTTMessageInfo:
         if self._protocol != Versions.v5:
             if topic is None or len(topic) == 0:
                 raise ValueError("Invalid topic.")
 
-        topic = topic.encode("utf-8") if isinstance(topic, str) else topic
+        topic = topic.encode("utf-8")
         if topic_wildcard_len_check(topic) != ErrorValues.SUCCESS:
             raise ValueError("Publish topic cannot contain wildcards.")
 
@@ -283,54 +218,57 @@ class MQTTProtocol(Protocol):
             rc = self._send_publish(local_mid, topic, local_payload, qos, retain, False, info, properties)
             info.rc = rc
             return info
+
         message = MQTTMessage(local_mid, topic)
         message.timestamp = time_func()
-        message.payload = payload
+        message.payload = local_payload
         message.qos = qos
         message.retain = retain
         message.dup = False
         message.properties = properties
+        with self._out_message_mutex:
+            if 0 < self._max_queued_messages <= len(self._out_messages):
+                message.info.rc = ErrorValues.QUEUE_SIZE
+                return message.info
 
-        if 0 < self._max_queued_messages <= len(self._out_messages):
-            message.info.rc = ErrorValues.QUEUE_SIZE
+            if local_mid in self._out_messages:
+                message.info.rc = ErrorValues.QUEUE_SIZE
+                return message.info
+
+            self._out_messages[message.mid] = message
+            if self._max_inflight_messages == 0 or self._inflight_messages < self._max_inflight_messages:
+                self._inflight_messages += 1
+                if qos == 1:
+                    message.state = MessageStates.WAIT_FOR_PUBACK
+                elif qos == 2:
+                    message.state = MessageStates.WAIT_FOR_PUBREC
+
+                rc = self._send_publish(message.mid, topic, message.payload, message.qos, message.retain, message.dup, message.info, message.properties)
+                # remove from inflight messages so it will be send after a connection is made
+                if rc is ErrorValues.NO_CONN:
+                    self._inflight_messages -= 1
+                    message.state = MessageStates.PUBLISH
+
+                message.info.rc = rc
+                return message.info
+
+            message.state = MessageStates.QUEUED
+            message.info.rc = ErrorValues.SUCCESS
             return message.info
 
-        if local_mid in self._out_messages:
-            message.info.rc = ErrorValues.QUEUE_SIZE
-            return message.info
-
-        self._out_messages[message.mid] = message
-        if self._max_inflight_messages == 0 or self._inflight_messages < self._max_inflight_messages:
-            self._inflight_messages += 1
-            if qos == 1:
-                message.state = MessageStates.WAIT_FOR_PUBACK
-            elif qos == 2:
-                message.state = MessageStates.WAIT_FOR_PUBREC
-
-            rc = self._send_publish(message.mid, topic, message.payload, message.qos, message.retain, message.dup, message.info, message.properties)
-            # remove from inflight messages so it will be send after a connection is made
-            if rc is ErrorValues.NO_CONN:
-                self._inflight_messages -= 1
-                message.state = MessageStates.PUBLISH
-
-            message.info.rc = rc
-            return message.info
-        message.state = MessageStates.QUEUED
-        message.info.rc = ErrorValues.SUCCESS
-        return message.info
-
-    def username_pw_set(self, username: Union[bytes, str], password: Optional[Union[bytes, str]] = None) -> NoReturn:
+    def username_pw_set(self, username: str, password: Optional[str] = None) -> NoReturn:
         # [MQTT-3.1.3-11] User name must be UTF-8 encoded string
         self._username = None if username is None else username.encode("utf-8")
-        self._password = password
-        if isinstance(self._password, str):
-            self._password = self._password.encode("utf-8")
+        self._password = password.encode("utf-8") if isinstance(password, str) else password
 
-    def disconnect(self, rc: ReasonCodes = None, properties: Properties = None) -> ErrorValues:
+    def is_connected(self) -> bool:
+        return self._state == ConnectionStates.CONNECTED
+
+    def disconnect(self, rc: ReasonCodes = None, properties: Optional[Properties] = None) -> ErrorValues:
         self._state = ConnectionStates.DISCONNECTING
         return self._send_disconnect(rc, properties)
 
-    def subscribe(self, topic: Union[str, Tuple[str, SubscribeOptions]], qos: int = 0, options: Optional[SubscribeOptions] = None, properties: Properties = None) -> Tuple[ErrorValues, int]:
+    def subscribe(self, topic: TopicSubscription, qos: QOS = 0, options: Optional[SubscribeOptions] = None, properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
         topic_qos_list = None
         if isinstance(topic, tuple):
             if self._protocol == Versions.v5:
@@ -382,7 +320,7 @@ class MQTTProtocol(Protocol):
 
         return self._send_subscribe(False, topic_qos_list, properties)
 
-    def unsubscribe(self, topic: Union[bytes, str, List[str]], properties: Properties = None) -> Tuple[ErrorValues, int]:
+    def unsubscribe(self, topic: Union[str, List[str]], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
         topic_list = None
         if topic is None:
             raise ValueError("Invalid topic.")
@@ -402,48 +340,90 @@ class MQTTProtocol(Protocol):
 
         return self._send_unsubscribe(False, topic_list, properties)
 
-    # MQTT packet sending
+    # Packet Processing
+    def loop_write(self, max_packets: int = 1) -> ErrorValues:
+        try:
+            rc = self._packet_write()
+            if rc == ErrorValues.AGAIN:
+                return ErrorValues.SUCCESS
+            elif rc > 0:
+                return self._loop_rc_handle(rc)
+            else:
+                return ErrorValues.SUCCESS
+        finally:
+            return ErrorValues.SUCCESS
+
+    def _packet_handle(self) -> ErrorValues:
+        cmd = self._in_packet.command & 0xF0
+        if cmd == MessageTypes.PINGREQ:
+            return self._handle_pingreq()
+        if cmd == MessageTypes.PINGRESP:
+            return self._handle_pingresp()
+        if cmd == MessageTypes.PUBACK:
+            return self._handle_pubackcomp("PUBACK")
+        if cmd == MessageTypes.PUBCOMP:
+            return self._handle_pubackcomp("PUBCOMP")
+        if cmd == MessageTypes.PUBLISH:
+            return self._handle_publish()
+        if cmd == MessageTypes.PUBREC:
+            return self._handle_pubrec()
+        if cmd == MessageTypes.PUBREL:
+            return self._handle_pubrel()
+        if cmd == MessageTypes.CONNACK:
+            return self._handle_connack()
+        if cmd == MessageTypes.SUBACK:
+            return self._handle_suback()
+        if cmd == MessageTypes.UNSUBACK:
+            return self._handle_unsuback()
+        if cmd == MessageTypes.DISCONNECT and self._protocol == Versions.v5:  # only allowed in MQTT 5.0
+            return self._handle_disconnect()
+        # If we don't recognise the command, return an error straight away.
+        self._easy_log(LogLevels.ERR, "Error: Unrecognised command {}", cmd)
+        return ErrorValues.PROTOCOL
+
+    # Packet Sending
     def _send_pingreq(self) -> ErrorValues:
-        log.debug("Sending PINGREQ")
+        self._easy_log(LogLevels.DEBUG, "Sending PINGREQ")
         rc = self._send_simple_command(MessageTypes.PINGREQ)
+        if rc == ErrorValues.SUCCESS:
+            self._ping_t = time_func()
         return rc
 
     def _send_pingresp(self) -> ErrorValues:
-        log.debug("Sending PINGRESP")
+        self._easy_log(LogLevels.DEBUG, "Sending PINGRESP")
         return self._send_simple_command(MessageTypes.PINGRESP)
 
     def _send_puback(self, mid: int) -> ErrorValues:
-        log.debug("Sending PUBACK (Mid: {mid})", mid=mid)
+        self._easy_log(LogLevels.DEBUG, "Sending PUBACK (Mid: {})", mid)
         return self._send_command_with_mid(MessageTypes.PUBACK, mid, False)
 
     def _send_pubcomp(self, mid: int) -> ErrorValues:
-        log.debug("Sending PUBCOMP (Mid: {mid})", mid=mid)
+        self._easy_log(LogLevels.DEBUG, "Sending PUBCOMP (Mid: {})", mid)
         return self._send_command_with_mid(MessageTypes.PUBCOMP, mid, False)
 
-    def _send_publish(self, mid: int, topic: Union[bytes, str], payload: Union[bytes, bytearray, int, float, str, None] = b"", qos: int = 0, retain: bool = False, dup: bool = False, info: MQTTMessageInfo = None, properties: Properties = None) -> ErrorValues:
+    def _send_publish(self, mid: int, topic: str, payload: Payload = b"", qos: QOS = 0, retain: bool = False, dup: bool = False, info: Optional[MQTTMessageInfo] = None, properties: Optional[Properties] = None) -> ErrorValues:
         # we assume that topic and payload are already properly encoded
         assert not isinstance(topic, str) and not isinstance(payload, str) and payload is not None
         command = MessageTypes.PUBLISH | ((dup & 0x1) << 3) | (qos << 1) | retain
         packet = bytearray([command, ])
         payloadlen = len(payload)
         remaining_length = 2 + len(topic) + payloadlen
-        log_args = {"dup": dup, "qos": qos, "retain": retain, "mid": mid, "topic": topic}
+        log_args = [dup, qos, retain, mid, topic]
         if payloadlen == 0:
             if self._protocol == Versions.v5:
-                log.debug("Sending PUBLISH (d{dup}, q{qos}, r{retain}, m{mid}), '{topic}', properties={props} (NULL payload)", **log_args, props=properties)
+                self._easy_log(LogLevels.DEBUG, "Sending PUBLISH (d{}, q{}, r{}, m{}), '{}', properties={} (NULL payload)", *log_args, properties)
             else:
-                log.debug("Sending PUBLISH (d{dup}, q{qos}, r{retain}, m{mid}), '{topic}' (NULL payload)", **log_args)
+                self._easy_log(LogLevels.DEBUG, "Sending PUBLISH (d{}, q{}, r{}, m{}), '{}' (NULL payload)", *log_args)
         else:
             if self._protocol == Versions.v5:
-                log.debug("Sending PUBLISH (d{dup}, q{qos}, r{retain}, m{mid}), '{topic}', properties={props}, ... ({size} bytes)", **log_args, props=properties, size=payloadlen)
+                self._easy_log(LogLevels.DEBUG, "Sending PUBLISH (d{}, q{}, r{}, m{}), '{}', properties={}, ... ({} bytes)", *log_args, properties, payloadlen)
             else:
-                log.debug("Sending PUBLISH (d{dup}, q{qos}, r{retain}, m{mid}), '{topic}', ... ({size} bytes)", **log_args, size=payloadlen)
+                self._easy_log(LogLevels.DEBUG, "Sending PUBLISH (d{}, q{}, r{}, m{}), '{}', ... ({} bytes)", *log_args, payloadlen)
 
         if qos > 0:
             # For message id
             remaining_length += 2
 
-        packed_properties = b""
         if self._protocol == Versions.v5:
             packed_properties = b"\x00" if properties is None else properties.pack()
             remaining_length += len(packed_properties)
@@ -461,11 +441,11 @@ class MQTTProtocol(Protocol):
         return self._packet_queue(MessageTypes.PUBLISH, packet, mid, qos, info)
 
     def _send_pubrec(self, mid: int) -> ErrorValues:
-        log.debug("Sending PUBREC (Mid: {mid})", mid=mid)
+        self._easy_log(LogLevels.DEBUG, "Sending PUBREC (Mid: {})", mid)
         return self._send_command_with_mid(MessageTypes.PUBREC, mid, False)
 
     def _send_pubrel(self, mid: int) -> ErrorValues:
-        log.debug("Sending PUBREL (Mid: {mid}})", mid=mid)
+        self._easy_log(LogLevels.DEBUG, "Sending PUBREL (Mid: {})", mid)
         return self._send_command_with_mid(MessageTypes.PUBREL | 2, mid, False)
 
     def _send_command_with_mid(self, command: int, mid: int, dup: bool) -> ErrorValues:
@@ -508,8 +488,6 @@ class MQTTProtocol(Protocol):
                 connect_flags |= 0x40
                 remaining_length += 2 + len(self._password)
 
-        packed_connect_properties = b""
-        packed_will_properties = b""
         if self._protocol == Versions.v5:
             if self._connect_properties is None:
                 packed_connect_properties = b"\x00"
@@ -524,13 +502,7 @@ class MQTTProtocol(Protocol):
                 remaining_length += len(packed_will_properties)
 
         command = MessageTypes.CONNECT
-        packet = bytearray()
-        packet.append(command)
-        # as per the mosquitto broker, if the MSB of this version is set
-        # to 1, then it treats the connection as a bridge
-        if self._client_mode == MQTT_BRIDGE:
-            proto_ver |= 0x80
-
+        packet = bytearray([command, ])
         self._pack_remaining_length(packet, remaining_length)
         packet.extend(struct.pack("!H" + str(len(protocol)) + "sBBH", len(protocol), protocol, proto_ver, connect_flags, keepalive))
         if self._protocol == Versions.v5:
@@ -549,36 +521,30 @@ class MQTTProtocol(Protocol):
                 self._pack_str16(packet, self._password)
 
         self._keepalive = keepalive
-        log_args = {
-            "u": (connect_flags & 0x80) >> 7,
-            "p": (connect_flags & 0x40) >> 6,
-            "wr": (connect_flags & 0x20) >> 5,
-            "wq": (connect_flags & 0x18) >> 3,
-            "wf": (connect_flags & 0x4) >> 2,
-            "c": (connect_flags & 0x2) >> 1,
-            "k": keepalive,
-            "id": self._client_id
-        }
+        log_args = [
+            (connect_flags & 0x80) >> 7, (connect_flags & 0x40) >> 6, (connect_flags & 0x20) >> 5,
+            (connect_flags & 0x18) >> 3, (connect_flags & 0x4) >> 2, (connect_flags & 0x2) >> 1, keepalive,
+            self._client_id
+        ]
         if self._protocol == Versions.v5:
-            log.debug("Sending CONNECT (u{u}, p{p}, wr{wr}, wq{wq}, wf{wf}, c{c}, k{k}) client_id={id} properties={props}", **log_args, props=self._connect_properties)
+            self._easy_log(LogLevels.DEBUG, "Sending CONNECT (u{}, p{}, wr{}, wq{}, wf{}, c{}, k{}) client_id={} properties={}", *log_args, self._connect_properties)
         else:
-            log.debug("Sending CONNECT (u{u}, p{p}, wr{wr}, wq{wq}, wf{wf}, c{c}, k{k}) client_id={id}", **log_args)
+            self._easy_log(LogLevels.DEBUG, "Sending CONNECT (u{}, p{}, wr{}, wq{}, wf{}, c{}, k{}) client_id={}", *log_args)
         return self._packet_queue(command, packet, 0, 0)
 
-    def _send_disconnect(self, rc: ReasonCodes = None, properties: Properties = None) -> ErrorValues:
+    def _send_disconnect(self, reasoncode: Optional[int] = None, properties: Optional[Properties] = None) -> ErrorValues:
         if self._protocol == Versions.v5:
-            log.debug("Sending DISCONNECT reasonCode={code} properties={props}", code=rc, props=properties)
+            self._easy_log(LogLevels.DEBUG, "Sending DISCONNECT reasonCode={} properties={}", reasoncode, properties)
         else:
-            log.debug("Sending DISCONNECT")
+            self._easy_log(LogLevels.DEBUG, "Sending DISCONNECT")
 
         remaining_length = 0
         command = MessageTypes.DISCONNECT
         packet = bytearray([command, ])
-        packed_props = b""
         if self._protocol == Versions.v5:
-            if properties is not None or rc is not None:
-                if rc is None:
-                    rc = ReasonCodes(MessageTypes.DISCONNECT >> 4, identifier=0)
+            if properties is not None or reasoncode is not None:
+                if reasoncode is None:
+                    reasoncode = ReasonCodes(MessageTypes.DISCONNECT >> 4, identifier=0)
                 remaining_length += 1
                 if properties is not None:
                     packed_props = properties.pack()
@@ -586,16 +552,15 @@ class MQTTProtocol(Protocol):
 
         self._pack_remaining_length(packet, remaining_length)
         if self._protocol == Versions.v5:
-            if rc is not None:
-                packet += rc.pack()
+            if reasoncode is not None:
+                packet += reasoncode.pack()
                 if properties is not None:
                     packet += packed_props
 
         return self._packet_queue(command, packet, 0, 0)
 
-    def _send_subscribe(self, dup: int, topics: List[Tuple[bytes, Union[int, SubscribeOptions]]], properties: Properties = None) -> Tuple[ErrorValues, int]:
+    def _send_subscribe(self, dup: bool, topics: List[Tuple[str, Union[int, SubscribeOptions]]], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
         remaining_length = 2
-        packed_subscribe_properties = b""
         if self._protocol == Versions.v5:
             if properties is None:
                 packed_subscribe_properties = b"\x00"
@@ -606,8 +571,7 @@ class MQTTProtocol(Protocol):
             remaining_length += 2 + len(t) + 1
 
         command = MessageTypes.SUBSCRIBE | (dup << 3) | 0x2
-        packet = bytearray()
-        packet.append(command)
+        packet = bytearray([command, ])
         self._pack_remaining_length(packet, remaining_length)
         local_mid = self._mid_generate()
         packet.extend(struct.pack("!H", local_mid))
@@ -622,12 +586,11 @@ class MQTTProtocol(Protocol):
             else:
                 packet.append(q)
 
-        log.debug("Sending SUBSCRIBE (d{dup}, m{mid}) {topics}", dup=dup, mid=local_mid, topics=topics)
+        self._easy_log(LogLevels.DEBUG, "Sending SUBSCRIBE (d{}, m{}) {}", dup, local_mid, topics)
         return self._packet_queue(command, packet, local_mid, 1), local_mid
 
-    def _send_unsubscribe(self, dup: int, topics: List[Union[bytes, str]], properties: Properties = None) -> Tuple[ErrorValues, int]:
+    def _send_unsubscribe(self, dup: bool, topics: List[str], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
         remaining_length = 2
-        packed_unsubscribe_properties = b""
         if self._protocol == Versions.v5:
             if properties is None:
                 packed_unsubscribe_properties = b"\x00"
@@ -652,39 +615,27 @@ class MQTTProtocol(Protocol):
 
         # topics_repr = ", ".join("'"+topic.decode("utf8")+"'" for topic in topics)
         if self._protocol == Versions.v5:
-            log.debug("Sending UNSUBSCRIBE (d{dup}, m{mid}) {props} {topics}", dup=dup, mid=local_mid, props=properties, topics=topics)
+            self._easy_log(LogLevels.DEBUG, "Sending UNSUBSCRIBE (d{}, m{}) {} {}", dup, local_mid, properties, topics)
         else:
-            log.debug("Sending UNSUBSCRIBE (d{dup}, m{mid}) {topics}", dup=dup, mid=local_mid, topics=topics)
+            self._easy_log(LogLevels.DEBUG, "Sending UNSUBSCRIBE (d{}, m{}) {}", dup, local_mid, topics)
         return self._packet_queue(command, packet, local_mid, 1), local_mid
 
-    # MQTT packet handling
-    def _packet_handle(self) -> ErrorValues:
-        cmd = self._in_packet.command & 0xF0
-        if cmd == MessageTypes.PINGREQ:
-            return self._handle_pingreq()
-        if cmd == MessageTypes.PINGRESP:
-            return self._handle_pingresp()
-        if cmd == MessageTypes.PUBACK:
-            return self._handle_pubackcomp("PUBACK")
-        if cmd == MessageTypes.PUBCOMP:
-            return self._handle_pubackcomp("PUBCOMP")
-        if cmd == MessageTypes.PUBLISH:
-            return self._handle_publish()
-        if cmd == MessageTypes.PUBREC:
-            return self._handle_pubrec()
-        if cmd == MessageTypes.PUBREL:
-            return self._handle_pubrel()
-        if cmd == MessageTypes.CONNACK:
-            return self._handle_connack()
-        if cmd == MessageTypes.SUBACK:
-            return self._handle_suback()
-        if cmd == MessageTypes.UNSUBACK:
-            return self._handle_unsuback()
-        if cmd == MessageTypes.DISCONNECT and self._protocol == Versions.v5:  # only allowed in MQTT 5.0
-            return self._handle_disconnect()
-        # If we don't recognise the command, return an error straight away.
-        log.error("Error: Unrecognised command {cmd}", cmd=cmd)
-        return ErrorValues.PROTOCOL
+    # Packet Handling/Receiving
+    def _handle_pingreq(self) -> ErrorValues:
+        if self._in_packet.remaining_length != 0:
+            return ErrorValues.PROTOCOL
+
+        self._easy_log(LogLevels.DEBUG, "Received PINGREQ")
+        return self._send_pingresp()
+
+    def _handle_pingresp(self) -> ErrorValues:
+        if self._in_packet.remaining_length != 0:
+            return ErrorValues.PROTOCOL
+
+        # No longer waiting for a PINGRESP.
+        self._ping_t = 0
+        self._easy_log(LogLevels.DEBUG, "Received PINGRESP")
+        return ErrorValues.SUCCESS
 
     def _handle_connack(self) -> ErrorValues:
         if self._protocol == Versions.v5:
@@ -703,83 +654,108 @@ class MQTTProtocol(Protocol):
 
         if self._protocol == Versions.v311:
             if result == ConnAckCodes.REFUSED_PROTOCOL_VERSION:
-                log.debug("Received CONNACK ({flags}, {rslt}), attempting downgrade to MQTT v3.1.", flags=flags, rslt=result)
+                self._easy_log(LogLevels.DEBUG, "Received CONNACK ({}, {}), attempting downgrade to MQTT v3.1.", flags, result)
                 # Downgrade to MQTT v3.1
                 self._protocol = Versions.v31
-                return self.disconnect(ReasonCodes(132))
+                return self.reconnect()
+
             if result == ConnAckCodes.REFUSED_IDENTIFIER_REJECTED and self._client_id == b"":
-                log.debug("Received CONNACK ({flags}, {rslt}), attempting to use non-empty CID", flags=flags, rslt=result)
-                self._client_id = self.make_id()
-                return self.disconnect(ReasonCodes(133))
+                self._easy_log(LogLevels.DEBUG, "Received CONNACK ({}, {}), attempting to use non-empty CID", flags, result)
+                self._client_id = base62(uuid.uuid4().int, padding=22).encode("utf-8")
+                return self.reconnect()
 
         if result == 0:
             self._state = ConnectionStates.CONNECTED
 
         if self._protocol == Versions.v5:
-            log.debug("Received CONNACK ({flags}, {reason}) properties={props}", flags=flags, reason=reason, props=properties)
+            self._easy_log(LogLevels.DEBUG, "Received CONNACK ({}, {}) properties={}", flags, reason, properties)
         else:
-            log.debug("Received CONNACK ({flags}, {reason})", flags=flags, reason=result)
+            self._easy_log(LogLevels.DEBUG, "Received CONNACK ({}, {})", flags, result)
 
         # it won't be the first successful connect any more
         self._mqttv5_first_connect = False
-        on_connect = self._callbacks.on_connect
-        if on_connect:
-            flags_dict = {"session present": flags & 0x01}
-            try:
-                if self._protocol == Versions.v5:
-                    on_connect(self, self._userdata, flags_dict, reason, properties)
-                else:
-                    on_connect(self, self._userdata, flags_dict, result)
-            except Exception as err:
-                log.error("Caught exception in on_connect: {err}", err=err)
-                if not self.suppress_exceptions:
-                    raise
+        with self._callback_mutex:
+            if on_connect := self.on_connect:
+                flags_dict = {"session present": flags & 0x01}
+                with self._in_callback_mutex:
+                    try:
+                        if self._protocol == Versions.v5:
+                            on_connect(self, self._userdata, flags_dict, reason, properties)
+                        else:
+                            on_connect(self, self._userdata, flags_dict, result)
+                    except Exception as err:
+                        self._easy_log(LogLevels.ERR, "Caught exception in on_connect: {}", err)
+                        if not self.suppress_exceptions:
+                            raise
 
         if result == 0:
             rc = 0
-            for m in self._out_messages.values():
-                m.timestamp = time_func()
-                if m.state == MessageStates.QUEUED:
-                    self._packet_write()  # Process outgoing messages that have just been queued up
-                    return ErrorValues.SUCCESS
+            with self._out_message_mutex:
+                for m in self._out_messages.values():
+                    m.timestamp = time_func()
+                    if m.state == MessageStates.QUEUED:
+                        self.loop_write()  # Process outgoing messages that have just been queued up
+                        return ErrorValues.SUCCESS
 
-                if m.qos == 0:
-                    rc = self._send_publish(m.mid, m.topic.encode("utf-8"), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
-                    if rc != 0:
-                        return rc
-                elif m.qos == 1:
-                    if m.state == MessageStates.PUBLISH:
-                        self._inflight_messages += 1
-                        m.state = MessageStates.WAIT_FOR_PUBACK
-                        rc = self._send_publish(m.mid, m.topic.encode("utf-8"), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
+                    if m.qos == 0:
+                        with self._in_callback_mutex:  # Don't call loop_write after _send_publish()
+                            rc = self._send_publish(m.mid, m.topic.encode("utf-8"), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
                         if rc != 0:
                             return rc
-                elif m.qos == 2:
-                    if m.state == MessageStates.PUBLISH:
-                        self._inflight_messages += 1
-                        m.state = MessageStates.WAIT_FOR_PUBREC
-                        rc = self._send_publish(m.mid, m.topic.encode("utf-8"), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
-                        if rc != 0:
-                            return rc
-                    elif m.state == MessageStates.RESEND_PUBREL:
-                        self._inflight_messages += 1
-                        m.state = MessageStates.WAIT_FOR_PUBCOMP
-                        rc = self._send_pubrel(m.mid)
-                        if rc != 0:
-                            return rc
-                self._packet_write()  # Process outgoing messages that have just been queued up
+                    elif m.qos == 1:
+                        if m.state == MessageStates.PUBLISH:
+                            self._inflight_messages += 1
+                            m.state = MessageStates.WAIT_FOR_PUBACK
+                            with self._in_callback_mutex:  # Don't call loop_write after _send_publish()
+                                rc = self._send_publish(m.mid, m.topic.encode("utf-8"), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
+                            if rc != 0:
+                                return rc
+                    elif m.qos == 2:
+                        if m.state == MessageStates.PUBLISH:
+                            self._inflight_messages += 1
+                            m.state = MessageStates.WAIT_FOR_PUBREC
+                            with self._in_callback_mutex:  # Don't call loop_write after _send_publish()
+                                rc = self._send_publish(m.mid, m.topic.encode("utf-8"), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
+                            if rc != 0:
+                                return rc
+                        elif m.state == MessageStates.RESEND_PUBREL:
+                            self._inflight_messages += 1
+                            m.state = MessageStates.WAIT_FOR_PUBCOMP
+                            with self._in_callback_mutex:  # Don't call loop_write after _send_publish()
+                                rc = self._send_pubrel(m.mid)
+                            if rc != 0:
+                                return rc
+                    self.loop_write()  # Process outgoing messages that have just been queued up
             return rc
         if 0 < result < 6:
             return ErrorValues.CONN_REFUSED
         return ErrorValues.PROTOCOL
 
-    def _handle_on_connect_fail(self) -> NoReturn:
-        on_connect_fail = self._callbacks.on_connect_fail
-        if on_connect_fail:
-            try:
-                on_connect_fail(self, self._userdata)
-            except Exception as err:
-                log.error("Caught exception in on_connect_fail: {err}", err=err)
+    def _handle_pubackcomp(self, cmd: str) -> ErrorValues:
+        if self._protocol == Versions.v5:
+            if self._in_packet.remaining_length < 2:
+                return ErrorValues.PROTOCOL
+        elif self._in_packet.remaining_length != 2:
+            return ErrorValues.PROTOCOL
+
+        packet_type = MessageTypes.PUBACK if cmd == "PUBACK" else MessageTypes.PUBCOMP
+        packet_type = packet_type >> 4
+        mid, = struct.unpack("!H", self._in_packet.packet[:2])
+        if self._protocol == Versions.v5:
+            if self._in_packet.remaining_length > 2:
+                reasonCode = ReasonCodes(packet_type)
+                reasonCode.unpack(self._in_packet.packet[2:])
+                if self._in_packet.remaining_length > 3:
+                    properties = Properties(packet_type)
+                    properties.unpack(self._in_packet.packet[3:])
+
+        self._easy_log(LogLevels.DEBUG, "Received {} (Mid: {})", cmd, mid)
+        with self._out_message_mutex:
+            if mid in self._out_messages:
+                # Only inform the client the message has been sent once.
+                return self._do_on_publish(mid)
+
+        return ErrorValues.SUCCESS
 
     def _handle_disconnect(self) -> ErrorValues:
         packet_type = MessageTypes.DISCONNECT >> 4
@@ -790,21 +766,35 @@ class MQTTProtocol(Protocol):
             if self._in_packet.remaining_length > 3:
                 properties = Properties(packet_type)
                 properties.unpack(self._in_packet.packet[1:])
-        log.debug("Received DISCONNECT {code} {props}", code=reasonCode, props=properties)
+        self._easy_log(LogLevels.DEBUG, "Received DISCONNECT {} {}", reasonCode, properties)
         self._loop_rc_handle(reasonCode, properties)
         return ErrorValues.SUCCESS
 
-    def _handle_pingreq(self) -> ErrorValues:
-        if self._in_packet.remaining_length != 0:
-            return ErrorValues.PROTOCOL
+    def _handle_suback(self) -> ErrorValues:
+        self._easy_log(LogLevels.DEBUG, "Received SUBACK")
+        mid, packet = struct.unpack(f"!H{len(self._in_packet.packet) - 2}s", self._in_packet.packet)
+        if self._protocol == Versions.v5:
+            properties = Properties(MessageTypes.SUBACK >> 4)
+            _, props_len = properties.unpack(packet)
+            reasoncodes = []
+            for c in packet[props_len:]:
+                reasoncodes.append(ReasonCodes(MessageTypes.SUBACK >> 4, identifier=c))
+        else:
+            granted_qos = struct.unpack(f"!B{len(packet)}", packet)
 
-        log.debug("Received PINGREQ")
-        return self._send_pingresp()
+        with self._callback_mutex:
+            if on_subscribe := self.on_subscribe:
+                with self._in_callback_mutex:  # Don't call loop_write after _send_publish()
+                    try:
+                        if self._protocol == Versions.v5:
+                            on_subscribe(self, self._userdata, mid, reasoncodes, properties)
+                        else:
+                            on_subscribe(self, self._userdata, mid, granted_qos)
+                    except Exception as err:
+                        self._easy_log(LogLevels.ERR, "Caught exception in on_subscribe: {}", err)
+                        if not self.suppress_exceptions:
+                            raise
 
-    def _handle_pingresp(self) -> ErrorValues:
-        if self._in_packet.remaining_length != 0:
-            return ErrorValues.PROTOCOL
-        log.debug("Received PINGRESP")
         return ErrorValues.SUCCESS
 
     def _handle_publish(self) -> ErrorValues:
@@ -813,13 +803,9 @@ class MQTTProtocol(Protocol):
         message.dup = (header & 0x08) >> 3
         message.qos = (header & 0x06) >> 1
         message.retain = (header & 0x01)
-
         packet = self._packet_data()
-        pack_format = f"!H{len(packet) - 2}s"
-        slen, packet = struct.unpack(pack_format, packet)
-        pack_format = f"!{slen}s{len(packet) - slen}s"
-        topic, packet = struct.unpack(pack_format, packet)
-
+        slen, packet = struct.unpack(f"!H{len(packet) - 2}s", packet)
+        topic, packet = struct.unpack(f"!{slen}s{len(packet) - slen}s", packet)
         if self._protocol != Versions.v5 and len(topic) == 0:
             return ErrorValues.PROTOCOL
 
@@ -834,8 +820,7 @@ class MQTTProtocol(Protocol):
 
         message.topic = topic
         if message.qos > 0:
-            pack_format = f"!H{len(packet) - 2}s"
-            (message.mid, packet) = struct.unpack(pack_format, packet)
+            message.mid, packet = struct.unpack(f"!H{len(packet) - 2}s", packet)
 
         if self._protocol == Versions.v5:
             message.properties = Properties(MessageTypes.PUBLISH >> 4)
@@ -843,11 +828,11 @@ class MQTTProtocol(Protocol):
             packet = packet[props_len:]
 
         message.payload = packet
-        log_args = {"dup": message.dup, "qos": message.qos, "retain": message.retain, "mid": message.mid, "topics": print_topic}
+        log_args = [message.dup, message.qos, message.retain, message.mid, print_topic]
         if self._protocol == Versions.v5:
-            log.debug("Received PUBLISH (d{dup}, q{qos}, r{retain}, m{mid}), '{topics}', properties={props}, ...  ({size} bytes)", **log_args, props=message.properties, size=len(message.payload))
+            self._easy_log(LogLevels.DEBUG, "Received PUBLISH (d{}, q{}, r{}, m{}), '{}', properties={}, ...  ({} bytes)", *log_args, message.properties, len(message.payload))
         else:
-            log.debug("Received PUBLISH (d{dup}, q{qos}, r{retain}, m{mid}), '{topics}', ...  ({size} bytes)",  **log_args, size=len(message.payload))
+            self._easy_log(LogLevels.DEBUG, "Received PUBLISH (d{}, q{}, r{}, m{}), '{}', ...  ({} bytes)", *log_args, len(message.payload))
 
         message.timestamp = time_func()
         if message.qos == 0:
@@ -859,9 +844,40 @@ class MQTTProtocol(Protocol):
         if message.qos == 2:
             rc = self._send_pubrec(message.mid)
             message.state = MessageStates.WAIT_FOR_PUBREL
-            self._in_messages[message.mid] = message
+            with self._in_message_mutex:
+                self._in_messages[message.mid] = message
             return rc
         return ErrorValues.PROTOCOL
+
+    def _handle_pubrel(self) -> ErrorValues:
+        if self._protocol == Versions.v5:
+            if self._in_packet.remaining_length < 2:
+                return ErrorValues.PROTOCOL
+        elif self._in_packet.remaining_length != 2:
+            return ErrorValues.PROTOCOL
+
+        mid, = struct.unpack("!H", self._in_packet.packet)
+        self._easy_log(LogLevels.DEBUG, "Received PUBREL (Mid: {})", mid)
+        with self._in_message_mutex:
+            if mid in self._in_messages:
+                # Only pass the message on if we have removed it from the queue - this
+                # prevents multiple callbacks for the same message.
+                message = self._in_messages.pop(mid)
+                self._handle_on_message(message)
+                self._inflight_messages -= 1
+                if self._max_inflight_messages > 0:
+                    with self._out_message_mutex:
+                        rc = self._update_inflight()
+                    if rc != ErrorValues.SUCCESS:
+                        return rc
+
+        # FIXME: this should only be done if the message is known
+        # If unknown it's a protocol error and we should close the connection.
+        # But since we don't have (on disk) persistence for the session, it
+        # is possible that we must known about this message.
+        # Choose to acknwoledge this messsage (and thus losing a message) but
+        # avoid hanging. See #284.
+        return self._send_pubcomp(mid)
 
     def _handle_pubrec(self) -> ErrorValues:
         if self._protocol == Versions.v5:
@@ -878,69 +894,14 @@ class MQTTProtocol(Protocol):
                 if self._in_packet.remaining_length > 3:
                     properties = Properties(MessageTypes.PUBREC >> 4)
                     properties.unpack(self._in_packet.packet[3:])
-        log.debug("Received PUBREC (Mid: {mid})", mid=mid)
+        self._easy_log(LogLevels.DEBUG, "Received PUBREC (Mid: {})", mid)
 
-        if mid in self._out_messages:
-            msg = self._out_messages[mid]
-            msg.state = MessageStates.WAIT_FOR_PUBCOMP
-            msg.timestamp = time_func()
-            return self._send_pubrel(mid)
-        return ErrorValues.SUCCESS
-
-    def _handle_pubrel(self) -> ErrorValues:
-        if self._protocol == Versions.v5:
-            if self._in_packet.remaining_length < 2:
-                return ErrorValues.PROTOCOL
-        elif self._in_packet.remaining_length != 2:
-            return ErrorValues.PROTOCOL
-
-        mid, = struct.unpack("!H", self._in_packet.packet)
-        log.debug("Received PUBREL (Mid: {mid})", mid=mid)
-
-        if mid in self._in_messages:
-            # Only pass the message on if we have removed it from the queue - this
-            # prevents multiple callbacks for the same message.
-            message = self._in_messages.pop(mid)
-            self._handle_on_message(message)
-            self._inflight_messages -= 1
-            if self._max_inflight_messages > 0:
-                rc = self._update_inflight()
-                if rc != ErrorValues.SUCCESS:
-                    return rc
-
-        # FIXME: this should only be done if the message is known
-        # If unknown it's a protocol error and we should close the connection.
-        # But since we don't have (on disk) persistence for the session, it
-        # is possible that we must known about this message.
-        # Choose to acknwoledge this messsage (and thus losing a message) but
-        # avoid hanging. See #284.
-        return self._send_pubcomp(mid)
-
-    def _handle_suback(self) -> ErrorValues:
-        log.debug("Received SUBACK")
-        pack_format = f"!H{len(self._in_packet.packet) - 2}s"
-        mid, packet = struct.unpack(pack_format, self._in_packet.packet)
-        if self._protocol == Versions.v5:
-            properties = Properties(MessageTypes.SUBACK >> 4)
-            _, props_len = properties.unpack(packet)
-            reasoncodes = []
-            for c in packet[props_len:]:
-                reasoncodes.append(ReasonCodes(MessageTypes.SUBACK >> 4, identifier=c))
-        else:
-            pack_format = "!" + "B" * len(packet)
-            granted_qos = struct.unpack(pack_format, packet)
-
-        on_subscribe = self._callbacks.on_subscribe
-        if on_subscribe:
-            try:
-                if self._protocol == Versions.v5:
-                    on_subscribe(self, self._userdata, mid, reasoncodes, properties)
-                else:
-                    on_subscribe(self, self._userdata, mid, granted_qos)
-            except Exception as err:
-                log.error("Caught exception in on_subscribe: {err}", err=err)
-                if not self.suppress_exceptions:
-                    raise
+        with self._out_message_mutex:
+            if mid in self._out_messages:
+                msg = self._out_messages[mid]
+                msg.state = MessageStates.WAIT_FOR_PUBCOMP
+                msg.timestamp = time_func()
+                return self._send_pubrel(mid)
 
         return ErrorValues.SUCCESS
 
@@ -962,43 +923,19 @@ class MQTTProtocol(Protocol):
             if len(reasoncodes) == 1:
                 reasoncodes = reasoncodes[0]
 
-        log.debug("Received UNSUBACK (Mid: {mid})", mid=mid)
-        on_unsubscribe = self._callbacks.on_unsubscribe
-        if on_unsubscribe:
-            try:
-                if self._protocol == Versions.v5:
-                    on_unsubscribe(self, self._userdata, mid, properties, reasoncodes)
-                else:
-                    on_unsubscribe(self, self._userdata, mid)
-            except Exception as err:
-                log.error("Caught exception in on_unsubscribe: {err}", err=err)
-                if not self.suppress_exceptions:
-                    raise
-
-        return ErrorValues.SUCCESS
-
-    def _handle_pubackcomp(self, cmd: str) -> ErrorValues:
-        if self._protocol == Versions.v5:
-            if self._in_packet.remaining_length < 2:
-                return ErrorValues.PROTOCOL
-        elif self._in_packet.remaining_length != 2:
-            return ErrorValues.PROTOCOL
-
-        packet_type = MessageTypes.PUBACK if cmd == "PUBACK" else MessageTypes.PUBCOMP
-        packet_type = packet_type >> 4
-        mid, = struct.unpack("!H", self._in_packet.packet[:2])
-        if self._protocol == Versions.v5:
-            if self._in_packet.remaining_length > 2:
-                reasonCode = ReasonCodes(packet_type)
-                reasonCode.unpack(self._in_packet.packet[2:])
-                if self._in_packet.remaining_length > 3:
-                    properties = Properties(packet_type)
-                    properties.unpack(self._in_packet.packet[3:])
-
-        log.debug("Received {cmd} (Mid: {mid}", cmd=cmd, mid=mid)
-        if mid in self._out_messages:
-            # Only inform the client the message has been sent once.
-            return self._do_on_publish(mid)
+        self._easy_log(LogLevels.DEBUG, "Received UNSUBACK (Mid: {})", mid)
+        with self._callback_mutex:
+            if on_unsubscribe := self.on_unsubscribe:
+                with self._in_callback_mutex:
+                    try:
+                        if self._protocol == Versions.v5:
+                            on_unsubscribe(self, self._userdata, mid, properties, reasoncodes)
+                        else:
+                            on_unsubscribe(self, self._userdata, mid)
+                    except Exception as err:
+                        self._easy_log(LogLevels.ERR, "Caught exception in on_unsubscribe: {}", err)
+                        if not self.suppress_exceptions:
+                            raise
 
         return ErrorValues.SUCCESS
 
@@ -1009,53 +946,76 @@ class MQTTProtocol(Protocol):
             topic = None
 
         on_message_callbacks = []
-        if topic is not None:
-            for callback in self._on_message_filtered.iter_match(message.topic):
-                on_message_callbacks.append(callback)
-        on_message = self._callbacks.on_message if len(on_message_callbacks) == 0 else None
+        with self._callback_mutex:
+            if topic is not None:
+                for callback in self._on_message_filtered.iter_match(message.topic):
+                    on_message_callbacks.append(callback)
+            on_message = self.on_message if len(on_message_callbacks) == 0 else None
 
         for callback in on_message_callbacks:
-            try:
-                callback(self, self._userdata, message)
-            except Exception as err:
-                log.error("Caught exception in user defined callback function {callback}: {err}", callback=callback.__name__, err=err)
-                if not self.suppress_exceptions:
-                    raise
+            with self._in_callback_mutex:
+                try:
+                    callback(self, self._userdata, message)
+                except Exception as err:
+                    self._easy_log(LogLevels.ERR, "Caught exception in user defined callback function {}: {}", callback.__name__, err)
+                    if not self.suppress_exceptions:
+                        raise
 
         if on_message:
-            try:
-                on_message(self, self._userdata, message)
-            except Exception as err:
-                log.error("Caught exception in on_message: {err}", err=err)
-                if not self.suppress_exceptions:
-                    raise
+            with self._in_callback_mutex:
+                try:
+                    on_message(self, self._userdata, message)
+                except Exception as err:
+                    self._easy_log(LogLevels.ERR, "Caught exception in on_message: {}", err)
+                    if not self.suppress_exceptions:
+                        raise
 
-    # MQTT Helpers
+    def _handle_on_connect_fail(self) -> NoReturn:
+        with self._callback_mutex:
+            if on_connect_fail := self.on_connect_fail:
+                with self._in_callback_mutex:
+                    try:
+                        on_connect_fail(self, self._userdata)
+                    except Exception as err:
+                        self._easy_log(LogLevels.ERR, "Caught exception in on_connect_fail: {}", err)
 
-    def _do_on_disconnect(self, rc: int, properties: Properties = None):
-        on_disconnect = self._callbacks.on_disconnect
+    # Helpers
+    def max_inflight_messages_set(self, inflight: int) -> NoReturn:
+        if inflight < 0:
+            raise ValueError("Invalid inflight.")
+        self._max_inflight_messages = inflight
 
-        if on_disconnect:
-            try:
-                if self._protocol == Versions.v5:
-                    on_disconnect(self, self._userdata, rc, properties)
-                else:
-                    on_disconnect(self, self._userdata, rc)
-            except Exception as err:
-                log.error("Caught exception in on_disconnect: {err}", err=err)
-                if not self.suppress_exceptions:
-                    raise
+    def max_queued_messages_set(self, queue_size: int) -> NoReturn:
+        if queue_size < 0:
+            raise ValueError("Invalid queue size.")
+        if not isinstance(queue_size, int):
+            raise ValueError("Invalid type of queue size.")
+        self._max_queued_messages = queue_size
 
-    def _do_on_publish(self, mid):
-        on_publish = self._callbacks.on_publish
+    def _do_on_disconnect(self, rc: int, properties: Optional[Properties] = None) -> NoReturn:
+        with self._callback_mutex:
+            if on_disconnect := self.on_disconnect:
+                with self._in_callback_mutex:
+                    try:
+                        if self._protocol == Versions.v5:
+                            on_disconnect(self, self._userdata, rc, properties)
+                        else:
+                            on_disconnect(self, self._userdata, rc)
+                    except Exception as err:
+                        self._easy_log(LogLevels.ERR, "Caught exception in on_disconnect: {}", err)
+                        if not self.suppress_exceptions:
+                            raise
 
-        if on_publish:
-            try:
-                on_publish(self, self._userdata, mid)
-            except Exception as err:
-                log.error("Caught exception in on_publish: {err}", err=err)
-                if not self.suppress_exceptions:
-                    raise
+    def _do_on_publish(self, mid: int) -> ErrorValues:
+        with self._callback_mutex:
+            if on_publish := self.on_publish:
+                with self._in_callback_mutex:
+                    try:
+                        on_publish(self, self._userdata, mid)
+                    except Exception as err:
+                        self._easy_log(LogLevels.ERR, "Caught exception in on_publish: {}", err)
+                        if not self.suppress_exceptions:
+                            raise
 
         msg = self._out_messages.pop(mid)
         msg.info._set_as_published()
@@ -1067,65 +1027,45 @@ class MQTTProtocol(Protocol):
                     return rc
         return ErrorValues.SUCCESS
 
-    def _loop_rc_handle(self, rc: Optional[ReasonCodes], properties: Properties = None) -> NoReturn:
+    def _easy_log(self, level: LogLevels, fmt: str, *args: Any, **kwargs: Any) -> NoReturn:
+        buf = fmt.format(*args, **kwargs)
+        if on_log := self.on_log:
+            try:
+                on_log(self, self._userdata, level, buf)
+            except Exception:
+                # Can't _easy_log this, as we'll recurse until we break
+                pass  # self._logger will pick this up, so we're fine
+        if logger := self._logger:
+            level_std = {
+                LogLevels.DEBUG: LogLevel.debug,
+                LogLevels.INFO: LogLevel.info,
+                LogLevels.NOTICE: LogLevel.info,  # This has no direct equivalent level
+                LogLevels.WARNING: LogLevel.warn,
+                LogLevels.ERR: LogLevel.error
+            }.get(level, LogLevel.info)
+            logger.emit(level_std, buf)
+
+    def _loop_rc_handle(self, rc: ErrorValues, properties: Optional[Properties] = None) -> ErrorValues:
         if rc:
             self._send_disconnect(rc, properties)
             if self._state == ConnectionStates.DISCONNECTING:
                 rc = ErrorValues.SUCCESS
             self._do_on_disconnect(rc, properties)
+        return rc
 
     def _packet_data(self) -> bytearray:
-        """
-        removes the control and variable length header
-        :return:
-        """
+        # Removes the control and variable length header
         lenLen = 1
         while self._in_packet.packet[lenLen] & 0x80:
             lenLen += 1
         return self._in_packet.packet[lenLen + 1:]
 
     def _mid_generate(self) -> int:
-        self._last_mid += 1
-        if self._last_mid == 65536:
-            self._last_mid = 1
-        return self._last_mid
-
-    def _packet_write(self) -> ErrorValues:
-        try:
-            packet = self._out_packet.popleft()
-        except IndexError:
-            return ErrorValues.SUCCESS
-
-        try:
-            data = bytes(packet.packet[packet.pos:])
-            self.transport.write(data)
-        except (AttributeError, ValueError) as err:
-            self._out_packet.appendleft(packet)
-            log.error("failed to write data: {err}", err=err)
-            return ErrorValues.SUCCESS
-        except BlockingIOError as err:
-            self._out_packet.appendleft(packet)
-            log.error("failed to write data: {err}", err=err)
-            return ErrorValues.AGAIN
-        except ConnectionError as err:
-            self._out_packet.appendleft(packet)
-            log.error("failed to receive on socket: {err}", err=err)
-            return ErrorValues.CONN_LOST
-
-        self._last_msg_out = time_func()
-        return ErrorValues.SUCCESS
-
-    def _packet_queue(self, command: int, packet: Union[bytes, bytearray], mid: int, qos: int, info: MQTTMessageInfo = None) -> ErrorValues:
-        mpkt = OutPacket(
-            command=command,
-            mid=mid,
-            qos=qos,
-            pos=0,
-            packet=packet,
-            info=info
-        )
-        self._out_packet.append(mpkt)
-        return self._packet_write()
+        with self._mid_generate_mutex:
+            self._last_mid += 1
+            if self._last_mid == 65536:
+                self._last_mid = 1
+            return self._last_mid
 
     def _pack_remaining_length(self, packet: bytearray, remaining_length: int) -> bytearray:
         remaining_bytes = []
@@ -1148,7 +1088,44 @@ class MQTTProtocol(Protocol):
         packet.extend(struct.pack("!H", len(data)))
         packet.extend(data)
 
+    def _packet_queue(self, command: int, packet: Union[bytes, bytearray], mid: int, qos: QOS, info: Optional[MQTTMessageInfo] = None) -> ErrorValues:
+        self._out_packet.append(OutPacket(
+            command=command,
+            mid=mid,
+            qos=qos,
+            pos=0,
+            packet=packet,
+            info=info
+        ))
+        return self.loop_write()
+
+    def _packet_write(self) -> ErrorValues:
+        while True:
+            try:
+                packet = self._out_packet.popleft()
+            except IndexError:
+                return ErrorValues.SUCCESS
+
+            try:
+                data = bytes(packet.packet[packet.pos:])
+                self.transport.write(data)
+            except (AttributeError, ValueError):
+                self._out_packet.appendleft(packet)
+                return ErrorValues.SUCCESS
+            except BlockingIOError:
+                self._out_packet.appendleft(packet)
+                return ErrorValues.AGAIN
+            except ConnectionError:
+                self._out_packet.appendleft(packet)
+                return ErrorValues.CONN_LOST
+            break
+
+        with self._msgtime_mutex:
+            self._last_msg_out = time_func()
+        return ErrorValues.SUCCESS
+
     def _update_inflight(self) -> ErrorValues:
+        # Don't lock message_mutex here
         for m in self._out_messages.values():
             if self._inflight_messages < self._max_inflight_messages:
                 if m.qos > 0 and m.state == MessageStates.QUEUED:
@@ -1157,57 +1134,33 @@ class MQTTProtocol(Protocol):
                         m.state = MessageStates.WAIT_FOR_PUBACK
                     elif m.qos == 2:
                         m.state = MessageStates.WAIT_FOR_PUBREC
-                    rc = self._send_publish(m.mid, m.topic.encode('utf-8'), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
+                    rc = self._send_publish(m.mid, m.topic.encode("utf-8"), m.payload, m.qos, m.retain, m.dup, properties=m.properties)
                     if rc != 0:
                         return rc
             else:
                 return ErrorValues.SUCCESS
         return ErrorValues.SUCCESS
 
-    # MQTT Callbacks
-    def addCallback(self, fun: Callable, key: str = None) -> Callable:
-        key = key or fun.__name__
-        if key in [f.name for f in fields(self._callbacks)]:
-            setattr(self._callbacks, key, fun)
-            return fun
-        raise KeyError(f"Unknown callback name of {key}")
-
-    def max_inflight_messages_set(self, inflight: int) -> NoReturn:
-        if inflight < 0:
-            raise ValueError("Invalid inflight.")
-        self._max_inflight_messages = inflight
-
-    def max_queued_messages_set(self, queue_size: int) -> NoReturn:
-        if queue_size < 0:
-            raise ValueError("Invalid queue size.")
-        if not isinstance(queue_size, int):
-            raise ValueError("Invalid type of queue size.")
-        self._max_queued_messages = queue_size
-
-    def message_callback_add(self, sub: Union[bytes, str], callback: OnMessageCallback) -> NoReturn:
-        sub = sub.decode("utf-8") if isinstance(sub, bytes) else sub
+    # Callbacks
+    def message_callback_add(self, sub: str, callback: OnMessageCallback) -> NoReturn:
         if callback is None or sub is None:
             raise ValueError("sub and callback must both be defined.")
-        self._on_message_filtered[sub] = callback
 
-    def topic_callback(self, sub: Union[bytes, str]) -> Callable[[OnMessageCallback], OnMessageCallback]:
-        sub = sub.decode("utf-8") if isinstance(sub, bytes) else sub
+        with self._callback_mutex:
+            self._on_message_filtered[sub] = callback
 
+    def topic_callback(self, sub: str) -> Callable[[OnMessageCallback], OnMessageCallback]:
         def decorator(func: OnMessageCallback) -> OnMessageCallback:
             self.message_callback_add(sub, func)
             return func
         return decorator
 
-    def message_callback_remove(self, sub: Union[bytes, str]) -> NoReturn:
-        sub = sub.decode("utf-8") if isinstance(sub, bytes) else sub
+    def message_callback_remove(self, sub: str) -> NoReturn:
         if sub is None:
             raise ValueError("sub must defined.")
 
-        try:
-            del self._on_message_filtered[sub]
-        except KeyError:  # no such subscription
-            pass
-
-    # General Helpers
-    def make_id(self) -> bytes:
-        return f"{uuid.uuid4().int}"[:22].encode("utf-8")
+        with self._callback_mutex:
+            try:
+                del self._on_message_filtered[sub]
+            except KeyError:  # no such subscription
+                pass

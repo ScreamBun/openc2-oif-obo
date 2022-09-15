@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generator, NoReturn
+from typing import Any, Dict, Generator
 
 
 @dataclass
@@ -17,19 +17,24 @@ class MQTTMatcher:
     method to iterate efficiently over all filters that match
     some topic name.
     """
+    _root: Node
+
     def __init__(self):
         self._root = Node()
 
     def __setitem__(self, key: str, value: Any):
-        """Add a topic filter :key to the prefix tree
-        and associate it to :value"""
+        """
+        Add a topic filter :key to the prefix tree and associate it to :value
+        """
         node = self._root
         for sym in key.split("/"):
             node = node.children.setdefault(sym, Node())
         node.content = value
 
     def __getitem__(self, key: str) -> Any:
-        """Retrieve the value associated with some topic filter :key"""
+        """
+        Retrieve the value associated with some topic filter :key
+        """
         try:
             node = self._root
             for sym in key.split("/"):
@@ -40,8 +45,10 @@ class MQTTMatcher:
         except KeyError:
             raise KeyError(key)
 
-    def __delitem__(self, key: str) -> NoReturn:
-        """Delete the value associated with some topic filter :key"""
+    def __delitem__(self, key: str):
+        """
+        Delete the value associated with some topic filter :key
+        """
         lst = []
         try:
             parent, node = None, self._root
@@ -59,8 +66,9 @@ class MQTTMatcher:
                 del parent.children[k]
 
     def iter_match(self, topic: str) -> Generator[Any, None, None]:
-        """Return an iterator on all values associated with filters
-        that match the :topic"""
+        """
+        Return an iterator on all values associated with filters that match the :topic
+        """
         lst = topic.split("/")
         normal = not topic.startswith("$")
 

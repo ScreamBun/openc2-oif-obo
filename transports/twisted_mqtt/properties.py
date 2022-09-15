@@ -59,10 +59,8 @@ class VariableByteIntegers:  # Variable Byte Integer
 class Properties:
     """
     MQTT v5.0 properties class.
-
     See Properties.names for a list of accepted property names along with their numeric values.
     See Properties.properties for the data type of each property.
-
     Example of use:
         publish_properties = Properties(PacketTypes.PUBLISH)
         publish_properties.UserProperty = ("a", "2")
@@ -72,6 +70,7 @@ class Properties:
     this point.  Then properties are added as attributes, the name of which is the string property
     name without the spaces.
     """
+    packetType: Union[int, PacketTypes]
     types = ["Byte", "Two Byte Integer", "Four Byte Integer", "Variable Byte Integer", "Binary Data", "UTF-8 Encoded String", "UTF-8 String Pair"]
     names = {
         "Payload Format Indicator": 1,
@@ -133,15 +132,13 @@ class Properties:
         41: (types.index("Byte"), [PacketTypes.CONNACK]),
         42: (types.index("Byte"), [PacketTypes.CONNACK]),
     }
-    packetType: Union[int, PacketTypes]
 
-    def __init__(self, packet: Union[int, PacketTypes]) -> None:
+    def __init__(self, packet: Union[int, PacketTypes]):
         self.packetType = packet
 
-    def __setattr__(self, name: str, value: Any) -> NoReturn:
+    def __setattr__(self, name: str, value: Any):
         name = name.replace(" ", "")
-        privateVars = ["packetType", "types", "names", "properties"]
-        if name in privateVars:
+        if name in ("packetType", "types", "names", "properties"):
             object.__setattr__(self, name, value)
         else:
             # the name could have spaces in, or not.  Remove spaces before assignment
@@ -154,9 +151,9 @@ class Properties:
             # Check for forbidden values
             if not isinstance(value, list):
                 if name in ["ReceiveMaximum", "TopicAlias"] and (value < 1 or value > 65535):
-                    raise MQTTException(f"{name}f property value must be in the range 1-65535")
+                    raise MQTTException(f"{name} property value must be in the range 1-65535")
                 if name in ["TopicAliasMaximum"] and (value < 0 or value > 65535):
-                    raise MQTTException("{name} property value must be in the range 0-65535")
+                    raise MQTTException(f"{name} property value must be in the range 0-65535")
                 if name in ["MaximumPacketSize", "SubscriptionIdentifier"] and (value < 1 or value > 268435455):
                     raise MQTTException(f"{name} property value must be in the range 1-268435455")
                 if name in ["RequestResponseInformation", "RequestProblemInformation", "PayloadFormatIndicator"] and (value not in (0, 1)):
@@ -169,7 +166,7 @@ class Properties:
                     value = object.__getattribute__(self, name) + value
             object.__setattr__(self, name, value)
 
-    def __str__(self) -> str:
+    def __str__(self):
         buffer = "["
         first = True
         for name in self.names:
@@ -207,13 +204,11 @@ class Properties:
         return data
 
     def isEmpty(self) -> bool:
-        rc = True
         for name in self.names:
             compressedName = name.replace(" ", "")
             if hasattr(self, compressedName):
-                rc = False
-                break
-        return rc
+                return False
+        return True
 
     def clear(self) -> NoReturn:
         for name in self.names:
@@ -221,14 +216,11 @@ class Properties:
             if hasattr(self, compressedName):
                 delattr(self, compressedName)
 
-    def writeProperty(self, identifier: int, type_: int, value: Union[bytes, int]) -> bytes:
+    def writeProperty(self, identifier: int, type_: int, value: Union[bytes, int, str]) -> bytes:
         buffer = b""
         buffer += VariableByteIntegers.encode(identifier)  # identifier
         if type_ == self.types.index("Byte"):  # value
-            if sys.version_info[0] < 3:
-                buffer += chr(value)
-            else:
-                buffer += bytes([value])
+            buffer += bytes([value])
         elif type_ == self.types.index("Two Byte Integer"):
             buffer += writeInt16(value)
         elif type_ == self.types.index("Four Byte Integer"):
@@ -258,38 +250,33 @@ class Properties:
                     buffer += self.writeProperty(identifier, attr_type, getattr(self, compressedName))
         return VariableByteIntegers.encode(len(buffer)) + buffer
 
-    def readProperty(self, buffer: bytes, type_: int, propslen: int) -> Tuple[bytes, int]:
-        value = b""
-        valuelen = 0
+    def readProperty(self, buffer: bytes, type_: int, propslen: Optional[int]) -> Tuple[Union[bytes, int, str, Tuple[str, str]], int]:
         if type_ == self.types.index("Byte"):
-            value = buffer[0]
-            valuelen = 1
-        elif type_ == self.types.index("Two Byte Integer"):
-            value = readInt16(buffer)
-            valuelen = 2
-        elif type_ == self.types.index("Four Byte Integer"):
-            value = readInt32(buffer)
-            valuelen = 4
-        elif type_ == self.types.index("Variable Byte Integer"):
-            value, valuelen = VariableByteIntegers.decode(buffer)
-        elif type_ == self.types.index("Binary Data"):
-            value, valuelen = readBytes(buffer)
-        elif type_ == self.types.index("UTF-8 Encoded String"):
-            value, valuelen = readUTF(buffer, propslen)
-        elif type_ == self.types.index("UTF-8 String Pair"):
+            return buffer[0], 1
+        if type_ == self.types.index("Two Byte Integer"):
+            return readInt16(buffer), 2
+        if type_ == self.types.index("Four Byte Integer"):
+            return readInt32(buffer), 4
+        if type_ == self.types.index("Variable Byte Integer"):
+            return VariableByteIntegers.decode(buffer)
+        if type_ == self.types.index("Binary Data"):
+            return readBytes(buffer)
+        if type_ == self.types.index("UTF-8 Encoded String"):
+            return readUTF(buffer, propslen)
+        if type_ == self.types.index("UTF-8 String Pair"):
             value, valuelen = readUTF(buffer, propslen)
             buffer = buffer[valuelen:]  # strip the bytes used by the value
             value1, valuelen1 = readUTF(buffer, propslen - valuelen)
-            value = value, value1
+            value = (value, value1)
             valuelen += valuelen1
-        return value, valuelen
+            return value, valuelen
+        return b"", 0
 
     def getNameFromIdent(self, identifier: int) -> Optional[str]:
-        rc = None
         for name, value in self.names.items():
             if value == identifier:
-                rc = name
-        return rc
+                return name
+        return None
 
     def unpack(self, buffer: bytes) -> Tuple["Properties", int]:
         self.clear()

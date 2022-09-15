@@ -20,6 +20,7 @@ class EnumBase(Enum):
         raise ValueError(f"{fmt} is not a valid value")
 
 
+# Enum Classes
 class ConnectionStates(int, EnumBase):
     NEW = 0
     CONNECTED = 1
@@ -34,12 +35,6 @@ class ConnAckCodes(int, EnumBase):
     REFUSED_SERVER_UNAVAILABLE = 3
     REFUSED_BAD_USERNAME_PASSWORD = 4
     REFUSED_NOT_AUTHORIZED = 5
-
-
-class Versions(int, EnumBase):
-    v31 = 3
-    v311 = 4
-    v5 = 5
 
 
 class ErrorValues(int, EnumBase):
@@ -63,7 +58,7 @@ class ErrorValues(int, EnumBase):
     KEEPALIVE = 16
 
 
-class LogLevel(int, EnumBase):
+class LogLevels(int, EnumBase):
     INFO = 0x01
     NOTICE = 0x02
     WARNING = 0x04
@@ -85,7 +80,6 @@ class MessageStates(int, EnumBase):
 
 
 class MessageTypes(int, EnumBase):
-    NEW = 0x00
     CONNECT = 0x10
     CONNACK = 0x20
     PUBLISH = 0x30
@@ -101,3 +95,14 @@ class MessageTypes(int, EnumBase):
     PINGRESP = 0xD0
     DISCONNECT = 0xE0
     AUTH = 0xF0
+
+
+class Transports(str, EnumBase):
+    TCP = "tcp"
+    WebSockets = "websockets"
+
+
+class Versions(int, EnumBase):
+    v31 = 3
+    v311 = 4
+    v5 = 5

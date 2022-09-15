@@ -7,7 +7,7 @@ from twisted.internet import reactor
 from twisted.logger import (
     Logger, LogLevel, FilteringLogObserver, LogLevelFilterPredicate, globalLogBeginner, textFileLogObserver,
 )
-from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, Versions
+from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, MQTTService, Versions
 
 logLevelFilterPredicate = LogLevelFilterPredicate(defaultLogLevel=LogLevel.info)
 BROKER = "tcp:mosquitto.olympus.mtn:1883"
@@ -73,12 +73,16 @@ if __name__ == "__main__":
     print("Startup")
     factory = MQTTFactory(
         reactor=reactor,
-        host="mosquitto.olympus.mtn",
-        port=1883,
         client_id="Twisted-368207455685",
         subs=subs,
         version=Versions.v5
     )
     factory.addCallback(onMessage, "on_message")
+    service = MQTTService(
+        reactor=reactor,
+        host="mosquitto.olympus.mtn",
+        port=1883,
+        factory=factory,
+    )
     print("Reactor Running")
     reactor.run()

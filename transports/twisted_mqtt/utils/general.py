@@ -7,9 +7,10 @@ from .exceptions import MalformedPacket
 from ..matcher import MQTTMatcher
 
 
+# Client/Factory Utils
 def error_string(mqtt_errno: Union[int, ErrorValues]) -> str:
     """
-    Return the error string associated with a mqtt error number
+    Return the error string associated with a mqtt error number.
     """
     return {
         ErrorValues.SUCCESS: "No error.",
@@ -34,7 +35,7 @@ def error_string(mqtt_errno: Union[int, ErrorValues]) -> str:
 
 def connack_string(connack_code: Union[int, ConnAckCodes]) -> str:
     """
-    Return the string associated with a CONNACK result
+    Return the string associated with a CONNACK result.
     """
     return {
         ConnAckCodes.ACCEPTED: "Connection Accepted.",
@@ -47,14 +48,16 @@ def connack_string(connack_code: Union[int, ConnAckCodes]) -> str:
 
 
 def base62(num: int, base: str = string.digits + string.ascii_letters, padding: int = 1) -> str:
-    """Convert a number to base-62 representation."""
+    """
+    Convert a number to base-62 representation.
+    """
     assert num >= 0
     digits = []
     while num:
         num, rest = divmod(num, 62)
         digits.append(base[rest])
     digits.extend(base[0] for _ in range(len(digits), padding))
-    return ''.join(reversed(digits))
+    return "".join(reversed(digits))
 
 
 def topic_matches_sub(sub: str, topic: Union[bytes, str]) -> bool:
@@ -73,6 +76,22 @@ def topic_matches_sub(sub: str, topic: Union[bytes, str]) -> bool:
         return False
 
 
+def filter_wildcard_len_check(sub: bytes) -> ErrorValues:
+    if len(sub) == 0 or len(sub) > 65535 or any(b"+" in p or b"#" in p for p in sub.split(b"/") if len(p) > 1) or b"#/" in sub:
+        return ErrorValues.INVAL
+    return ErrorValues.SUCCESS
+
+
+def topic_wildcard_len_check(topic: bytes) -> ErrorValues:
+    # Search for + or # in a topic. Return ErrorValues.INVAL if found.
+    # Also returns ErrorValues.INVAL if the topic string is too long.
+    # Returns ErrorValues.SUCCESS if everything is fine.
+    if b"+" in topic or b"#" in topic or len(topic) > 65535:
+        return ErrorValues.INVAL
+    return ErrorValues.SUCCESS
+
+
+# Properties Utils
 def writeInt16(val: int) -> bytes:
     # serialize a 16-bit integer to network format
     return struct.pack("!H", val)
@@ -93,7 +112,7 @@ def readInt32(buf: bytes) -> int:
     return struct.unpack("!L", buf[:4])[0]
 
 
-def writeUTF(data) -> bytes:
+def writeUTF(data: Union[bytes, str]) -> bytes:
     # data could be a string, or bytes. If string, encode into bytes with utf-8
     data = data if isinstance(data, bytes) else bytes(data, "utf-8")
     return writeInt16(len(data)) + data
@@ -127,18 +146,3 @@ def writeBytes(buffer: bytes) -> bytes:
 def readBytes(buffer: bytes) -> Tuple[bytes, int]:
     length = readInt16(buffer)
     return buffer[2:2+length], length+2
-
-
-def filter_wildcard_len_check(sub: bytes) -> ErrorValues:
-    if len(sub) == 0 or len(sub) > 65535 or any(b'+' in p or b'#' in p for p in sub.split(b'/') if len(p) > 1) or b'#/' in sub:
-        return ErrorValues.INVAL
-    return ErrorValues.SUCCESS
-
-
-def topic_wildcard_len_check(topic: bytes) -> ErrorValues:
-    # Search for + or # in a topic. Return ErrorValues.INVAL if found.
-    # Also returns ErrorValues.INVAL if the topic string is too long.
-    # Returns ErrorValues.SUCCESS if everything is fine.
-    if b'+' in topic or b'#' in topic or len(topic) > 65535:
-        return ErrorValues.INVAL
-    return ErrorValues.SUCCESS

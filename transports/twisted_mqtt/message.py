@@ -1,7 +1,8 @@
 import time
 
 from threading import Condition
-from typing import NoReturn, Union
+from typing import NoReturn, Optional, Union
+from .properties import Properties
 from .utils import ErrorValues, MessageStates, error_string
 
 
@@ -12,23 +13,31 @@ class MQTTMessageInfo:
     message has been published, and/or wait until it is published.
     """
     mid: int
-    _published: bool = False
-    _condition: Condition()
     rc: int = 0
-    _iterpos: int = 0
+    _published: bool = False
+    _condition: Condition = Condition()
+    _iterpos: int
 
-    def __init__(self, mid: int) -> None:
+    def __init__(self, mid: int):
         self.mid = mid
+        self._iterpos = 0
 
-    def __str__(self) -> str:
+    def __str__(self):
         return str((self.rc, self.mid))
 
-    def __iter__(self) -> "MQTTMessageInfo":
+    def __iter__(self):
         self._iterpos = 0
         return self
 
-    def __next__(self) -> int:
+    def __next__(self):
         return self.next()
+
+    def __getitem__(self, index: int):
+        if index == 0:
+            return self.rc
+        if index == 1:
+            return self.mid
+        raise IndexError("index out of range")
 
     def next(self) -> int:
         if self._iterpos == 0:
@@ -39,30 +48,18 @@ class MQTTMessageInfo:
             return self.mid
         raise StopIteration
 
-    def __getitem__(self, index: int) -> int:
-        if index == 0:
-            return self.rc
-        if index == 1:
-            return self.mid
-        raise IndexError("index out of range")
-
     def _set_as_published(self) -> NoReturn:
         with self._condition:
             self._published = True
             self._condition.notify()
 
-    def wait_for_publish(self, timeout: int = None) -> NoReturn:
+    def wait_for_publish(self, timeout: Optional[int]) -> NoReturn:
         """
         Block until the message associated with this object is published, or
         until the timeout occurs. If timeout is None, this will never time out.
-        Set timeout to a positive number of seconds, e.g. 1.2, to enable the
-        timeout.
-
-        Raises ValueError if the message was not queued due to the outgoing
-        queue being full.
-
-        Raises RuntimeError if the message was not published for another
-        reason.
+        Set timeout to a positive number of seconds, e.g. 1.2, to enable the timeout.
+        Raises ValueError if the message was not queued due to the outgoing queue being full.
+        Raises RuntimeError if the message was not published for another reason.
         """
         if self.rc == ErrorValues.QUEUE_SIZE:
             raise ValueError("Message is not queued due to ERR_QUEUE_SIZE")
@@ -109,19 +106,21 @@ class MQTTMessage:
         mid : Integer. The message id.
         properties: Properties class. In MQTT v5.0, the properties associated with the message.
     """
-    timestamp: int = 0
+    timestamp: int
     state: MessageStates = MessageStates.INVALID
     dup: bool = False
     mid: int
-    topic: bytes
     payload: bytes = b""
     qos: int = 0
     retain: bool = False
     info: MQTTMessageInfo
+    properties: Optional[Properties]
+    _topic: bytes
 
-    def __init__(self, mid: int = 0, topic: bytes = b""):
+    def __init__(self, mid: int = 0, topic: Union[bytes, str] = b""):
+        self.timestamp = 0
         self.mid = mid
-        self._topic = topic
+        self._topic = topic.encode("utf-8") if isinstance(topic, str) else topic
         self.info = MQTTMessageInfo(mid)
 
     def __eq__(self, other: "MQTTMessage") -> bool:

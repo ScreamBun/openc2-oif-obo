@@ -1,20 +1,18 @@
 import uuid
 
 from dataclasses import fields
-from typing import Any, Callable, Literal, NoReturn, Optional, Tuple, Union
+from typing import Any, Callable, NoReturn, Optional, Tuple, Union
 from twisted.internet import reactor as Reactor
 from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.internet.endpoints import TCP4ClientEndpoint, TCP6ClientEndpoint, clientFromString
-from twisted.internet.interfaces import IStreamClientEndpoint
 from twisted.logger import Logger
 from twisted.python.failure import Failure
-from .consts import MQTT_CLIENT
 from .message import MQTTMessageInfo
 from .properties import Properties
-from .protocol import Callbacks, MQTTProtocol, SUBSCRIPTIONS
+from .protocol import MQTTProtocol, Subscriptions
 from .service import MQTTService
 from .subscribeoptions import SubscribeOptions
-from .utils import ErrorValues, Versions
+from .utils import Callbacks, ErrorValues, Versions
 
 log = Logger(namespace="mqtt")
 
@@ -23,29 +21,23 @@ class MQTTFactory(ReconnectingClientFactory):
     protocol: MQTTProtocol
     _reactor: Reactor
     _connectString: str
-    _endpoint: IStreamClientEndpoint
     _service: MQTTService
     _version: Versions
     _userdata: Any
     _client_id: bytes
     _keepalive = 60
     _connect_timeout = 5.0
-    _client_mode: Literal[0, 1] = MQTT_CLIENT
     _clean_session: bool = None
-    _subs: SUBSCRIPTIONS = []
+    _subs: Subscriptions = []
     _callbacks: Callbacks
 
-    def __init__(self, reactor: Reactor, host: str, port: int, client_id: Union[bytes, str] = "",  cert: str = None, key: str = None, clean_session=None, userdata=None, version=Versions.v311, subs: SUBSCRIPTIONS = None, callbacks = Callbacks()) -> None:
+    def __init__(self, reactor: Reactor, client_id: Union[bytes, str] = "", clean_session=None, userdata=None, version=Versions.v311, subs: Subscriptions = None, callbacks=Callbacks()) -> None:
         super().__init__()
         self._reactor = reactor
-        self._connectString = f"ssl:{host}:{port}:privateKey={key}:certKey={cert}" if cert and key else f"tcp:{host}:{port}"
-        self._endpoint = clientFromString(self._reactor, self._connectString)
-        self._service = MQTTService(self._endpoint, self)
         self._version = version
         self._userdata = userdata
         self._keepalive = 60
         self._connect_timeout = 5.0
-        self._client_mode = MQTT_CLIENT
         self._subs = subs or []
         self._callbacks = callbacks
 
@@ -68,7 +60,6 @@ class MQTTFactory(ReconnectingClientFactory):
             self._client_id = client_id
         if isinstance(self._client_id, str):
             self._client_id = self._client_id.encode("utf-8")
-        self._service.startService()
 
     # Twisted Interface
     def buildProtocol(self, addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]) -> MQTTProtocol:
