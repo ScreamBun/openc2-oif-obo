@@ -11,6 +11,7 @@ from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, MQTT
 
 logLevelFilterPredicate = LogLevelFilterPredicate(defaultLogLevel=LogLevel.info)
 BROKER = "tcp:mosquitto.olympus.mtn:1883"
+# BROKER = "tcp:localhost:1883"
 subs = [
     ("oc2/cmd", 1),
     ("oc2/cmd/all", 1)
@@ -80,6 +81,7 @@ if __name__ == "__main__":
     factory.addCallback(onMessage, "on_message")
     service = MQTTService(
         reactor=reactor,
+        # host="localhost",
         host="mosquitto.olympus.mtn",
         port=1883,
         factory=factory,
