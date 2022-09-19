@@ -4,7 +4,8 @@ from dataclasses import fields
 from typing import Any, Callable, NoReturn, Optional, Tuple, Union
 from twisted.internet import reactor as Reactor
 from twisted.internet.protocol import ReconnectingClientFactory
-from twisted.internet.endpoints import TCP4ClientEndpoint, TCP6ClientEndpoint, clientFromString
+from twisted.internet.defer import inlineCallbacks
+from twisted.internet.endpoints import TCP4ClientEndpoint, TCP6ClientEndpoint
 from twisted.logger import Logger
 from twisted.python.failure import Failure
 from .message import MQTTMessageInfo
@@ -20,7 +21,8 @@ log = Logger(namespace="mqtt")
 class MQTTFactory(ReconnectingClientFactory):
     protocol: MQTTProtocol
     _reactor: Reactor
-    _connectString: str
+    _addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]
+    _broker: str
     _service: MQTTService
     _version: Versions
     _userdata: Any
@@ -63,16 +65,33 @@ class MQTTFactory(ReconnectingClientFactory):
 
     # Twisted Interface
     def buildProtocol(self, addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]) -> MQTTProtocol:
+        self._addr = addr
+        self._broker = f"{self._addr.host}:{self._addr.port}"
         log.info("Build protocol for address: {addr}", addr=addr)
-        return MQTTProtocol(self, addr)
+        self.protocol = MQTTProtocol(self, addr)
+        Reactor.callLater(0.5, self.connectToBroker)
+        return self.protocol
 
-    def clientConnectionLost(self, connector: Any, reason: Failure) -> NoReturn:
+    def clientConnectionLost(self, connector: Any, reason: Failure) -> NoReturn:  # pylint: disable=W0237
         log.warn("Lost connection. Reason {reason!r}:", reason=reason)
         ReconnectingClientFactory.clientConnectionLost(self, connector, reason)
 
     def clientConnectionFailed(self, connector: Any, reason: Failure) -> NoReturn:
         log.warn("Connection failed. Reason {reason!r}:", reason=reason)
         ReconnectingClientFactory.clientConnectionFailed(self, connector, reason)
+
+    @inlineCallbacks
+    def connectToBroker(self):
+        """
+        Connect to MQTT broker
+        """
+        try:
+            yield self.protocol.connect()
+        except Exception as err:
+            log.error("Connecting to broker at {broker} raised {excp!s}", broker=self._broker, excp=err)
+            raise err
+        else:
+            log.info("Connected to broker at {broker}", broker=self._broker)
 
     # MQTT pass through
     def addCallback(self, fun: Callable, key: str = None) -> Callable:

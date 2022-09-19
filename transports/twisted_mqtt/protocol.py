@@ -5,30 +5,24 @@ import uuid
 from collections import OrderedDict, deque
 from dataclasses import asdict
 from typing import Any, Callable, Deque, List, Literal, NoReturn, Optional, Tuple, Union
+from twisted.internet import reactor as Reactor
 from twisted.internet.endpoints import TCP4ClientEndpoint, TCP6ClientEndpoint
 from twisted.internet.protocol import Protocol, connectionDone
-from twisted.internet.task import LoopingCall
 from twisted.logger import Logger, LogLevel
 from twisted.python.failure import Failure
 from .consts import MQTT_CLEAN_START_FIRST_ONLY
 from .matcher import MQTTMatcher
 from .message import MQTTMessage, MQTTMessageInfo
 from .properties import Properties
-from .reasoncodes import ReasonCodes
 from .subscribeoptions import SubscribeOptions
 from .utils import (
     ConnAckCodes, ConnectionStates, ErrorValues, LogLevels, MessageStates, MessageTypes, Transports, Versions,  # Enums
     DummyLock,  # Contexts
     InPacket, OutPacket,  # Dataclasses
     CallbackMixin,  # Mixins
+    ReasonCodes,  # Assorted
     base62, filter_wildcard_len_check, topic_wildcard_len_check  # Utils
 )
-
-try:
-    # Use monotonic clock if available
-    time_func = time.monotonic
-except AttributeError:
-    time_func = time.time
 
 # Types
 OnMessageCallback = Callable[["MQTTProtocol", Any, MQTTMessage], NoReturn]
@@ -41,11 +35,21 @@ TopicSubscription = Union[
     Tuple[Union[str, List[str]], SubscribeOptions]  # MQTTv5
 ]
 
+# Vars
+log = Logger(namespace="mqtt")
+try:
+    # Use monotonic clock if available
+    time_func = time.monotonic
+except AttributeError:
+    time_func = time.time
+
+
 
 class MQTTProtocol(CallbackMixin, Protocol):
     factory: "MQTTFactory"
     addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]
     broker: str
+    _reactor: Reactor
     _transport: Transports
     _protocol: Versions
     _userdata: Any
@@ -64,8 +68,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
     _out_packet: Deque[OutPacket]
     _last_msg_in: float
     _last_msg_out: float
-    _ping_t: float
-    _pingLoop: LoopingCall
+    _pinger: Reactor.callLater = None
     _last_mid: int = 0
     _state: ConnectionStates
     _out_messages: OrderedDict
@@ -90,8 +93,6 @@ class MQTTProtocol(CallbackMixin, Protocol):
     _in_message_mutex: DummyLock = DummyLock()
     _reconnect_delay_mutex: DummyLock = DummyLock()
     _mid_generate_mutex: DummyLock = DummyLock()
-    # Logging
-    _logger: Optional[Logger] = Logger(namespace="mqtt")
     # Assorted
     _subs: Subscriptions = []
     _mqttv5_first_connect: bool = True  # for clean_start == MQTT_CLEAN_START_FIRST_ONLY
@@ -122,9 +123,9 @@ class MQTTProtocol(CallbackMixin, Protocol):
         self._out_messages = OrderedDict()
         self._in_messages = OrderedDict()
         self._on_message_filtered = MQTTMatcher()
-        self._pingLoop = LoopingCall(self._send_pingreq)
 
         # Copy properties from factory
+        self.reactor = self.factory._reactor
         self._subs = self.factory._subs
         self._clean_session = self.factory._clean_session
         self._clean_start = MQTT_CLEAN_START_FIRST_ONLY
@@ -144,8 +145,6 @@ class MQTTProtocol(CallbackMixin, Protocol):
 
     def connectionLost(self, reason: Failure = connectionDone) -> NoReturn:
         self._easy_log(LogLevels.DEBUG, "--- Connection to MQTT Broker lost: {}", reason.getErrorMessage())
-        if self._pingLoop.running:
-            self._pingLoop.stop()
         self.connect()
 
     def dataReceived(self, data: bytes) -> ErrorValues:
@@ -184,7 +183,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
         self._send_connect(self._keepalive)
         for sub in self._subs:
             self.subscribe(*sub)
-        self._pingLoop.start(self._keepalive, now=False)
+        self._update_pinger()
 
     def publish(self, topic: str, payload: Payload = None, qos: QOS = 0, retain: bool = False, properties: Optional[Properties] = None) -> MQTTMessageInfo:
         if self._protocol != Versions.v5:
@@ -266,6 +265,8 @@ class MQTTProtocol(CallbackMixin, Protocol):
 
     def disconnect(self, rc: ReasonCodes = None, properties: Optional[Properties] = None) -> ErrorValues:
         self._state = ConnectionStates.DISCONNECTING
+        if self._pinger is not None:
+            self._pinger.cancel()
         return self._send_disconnect(rc, properties)
 
     def subscribe(self, topic: TopicSubscription, qos: QOS = 0, options: Optional[SubscribeOptions] = None, properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
@@ -346,47 +347,46 @@ class MQTTProtocol(CallbackMixin, Protocol):
             rc = self._packet_write()
             if rc == ErrorValues.AGAIN:
                 return ErrorValues.SUCCESS
-            elif rc > 0:
+            if rc > 0:
                 return self._loop_rc_handle(rc)
-            else:
-                return ErrorValues.SUCCESS
+            return ErrorValues.SUCCESS
         finally:
             return ErrorValues.SUCCESS
 
     def _packet_handle(self) -> ErrorValues:
         cmd = self._in_packet.command & 0xF0
+        rslt = ErrorValues.PROTOCOL
         if cmd == MessageTypes.PINGREQ:
-            return self._handle_pingreq()
-        if cmd == MessageTypes.PINGRESP:
-            return self._handle_pingresp()
-        if cmd == MessageTypes.PUBACK:
-            return self._handle_pubackcomp("PUBACK")
-        if cmd == MessageTypes.PUBCOMP:
-            return self._handle_pubackcomp("PUBCOMP")
-        if cmd == MessageTypes.PUBLISH:
-            return self._handle_publish()
-        if cmd == MessageTypes.PUBREC:
-            return self._handle_pubrec()
-        if cmd == MessageTypes.PUBREL:
-            return self._handle_pubrel()
-        if cmd == MessageTypes.CONNACK:
-            return self._handle_connack()
-        if cmd == MessageTypes.SUBACK:
-            return self._handle_suback()
-        if cmd == MessageTypes.UNSUBACK:
-            return self._handle_unsuback()
-        if cmd == MessageTypes.DISCONNECT and self._protocol == Versions.v5:  # only allowed in MQTT 5.0
-            return self._handle_disconnect()
-        # If we don't recognise the command, return an error straight away.
-        self._easy_log(LogLevels.ERR, "Error: Unrecognised command {}", cmd)
-        return ErrorValues.PROTOCOL
+            rslt = self._handle_pingreq()
+        elif cmd == MessageTypes.PINGRESP:
+            rslt = self._handle_pingresp()
+        elif cmd == MessageTypes.PUBACK:
+            rslt = self._handle_pubackcomp("PUBACK")
+        elif cmd == MessageTypes.PUBCOMP:
+            rslt = self._handle_pubackcomp("PUBCOMP")
+        elif cmd == MessageTypes.PUBLISH:
+            rslt = self._handle_publish()
+        elif cmd == MessageTypes.PUBREC:
+            rslt = self._handle_pubrec()
+        elif cmd == MessageTypes.PUBREL:
+            rslt = self._handle_pubrel()
+        elif cmd == MessageTypes.CONNACK:
+            rslt = self._handle_connack()
+        elif cmd == MessageTypes.SUBACK:
+            rslt = self._handle_suback()
+        elif cmd == MessageTypes.UNSUBACK:
+            rslt = self._handle_unsuback()
+        elif cmd == MessageTypes.DISCONNECT and self._protocol == Versions.v5:  # only allowed in MQTT 5.0
+            rslt = self._handle_disconnect()
+        else:
+            # If we don't recognise the command, return an error straight away.
+            self._easy_log(LogLevels.ERR, "Error: Unrecognised command {}", cmd)
+        return rslt
 
     # Packet Sending
     def _send_pingreq(self) -> ErrorValues:
         self._easy_log(LogLevels.DEBUG, "Sending PINGREQ")
         rc = self._send_simple_command(MessageTypes.PINGREQ)
-        if rc == ErrorValues.SUCCESS:
-            self._ping_t = time_func()
         return rc
 
     def _send_pingresp(self) -> ErrorValues:
@@ -633,7 +633,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
             return ErrorValues.PROTOCOL
 
         # No longer waiting for a PINGRESP.
-        self._ping_t = 0
+        self._update_pinger()
         self._easy_log(LogLevels.DEBUG, "Received PINGRESP")
         return ErrorValues.SUCCESS
 
@@ -657,12 +657,12 @@ class MQTTProtocol(CallbackMixin, Protocol):
                 self._easy_log(LogLevels.DEBUG, "Received CONNACK ({}, {}), attempting downgrade to MQTT v3.1.", flags, result)
                 # Downgrade to MQTT v3.1
                 self._protocol = Versions.v31
-                return self.reconnect()
+                return self.connect()
 
             if result == ConnAckCodes.REFUSED_IDENTIFIER_REJECTED and self._client_id == b"":
                 self._easy_log(LogLevels.DEBUG, "Received CONNACK ({}, {}), attempting to use non-empty CID", flags, result)
                 self._client_id = base62(uuid.uuid4().int, padding=22).encode("utf-8")
-                return self.reconnect()
+                return self.connect()
 
         if result == 0:
             self._state = ConnectionStates.CONNECTED
@@ -1033,17 +1033,15 @@ class MQTTProtocol(CallbackMixin, Protocol):
             try:
                 on_log(self, self._userdata, level, buf)
             except Exception:
-                # Can't _easy_log this, as we'll recurse until we break
-                pass  # self._logger will pick this up, so we're fine
-        if logger := self._logger:
-            level_std = {
-                LogLevels.DEBUG: LogLevel.debug,
-                LogLevels.INFO: LogLevel.info,
-                LogLevels.NOTICE: LogLevel.info,  # This has no direct equivalent level
-                LogLevels.WARNING: LogLevel.warn,
-                LogLevels.ERR: LogLevel.error
-            }.get(level, LogLevel.info)
-            logger.emit(level_std, buf)
+                pass
+        twisted_level = {
+            LogLevels.DEBUG: LogLevel.debug,
+            LogLevels.INFO: LogLevel.info,
+            LogLevels.NOTICE: LogLevel.info,  # This has no direct equivalent level
+            LogLevels.WARNING: LogLevel.warn,
+            LogLevels.ERR: LogLevel.error
+        }.get(level, LogLevel.info)
+        log.emit(twisted_level, buf)
 
     def _loop_rc_handle(self, rc: ErrorValues, properties: Optional[Properties] = None) -> ErrorValues:
         if rc:
@@ -1123,6 +1121,15 @@ class MQTTProtocol(CallbackMixin, Protocol):
         with self._msgtime_mutex:
             self._last_msg_out = time_func()
         return ErrorValues.SUCCESS
+
+    def _update_pinger(self) -> NoReturn:
+        if self._pinger:
+            if self._pinger.active():
+                self._pinger.reset(self._keepalive)
+            else:
+                self._pinger = Reactor.callLater(self._keepalive, self._send_pingreq)
+        else:
+            self._pinger = Reactor.callLater(self._keepalive, self._send_pingreq)
 
     def _update_inflight(self) -> ErrorValues:
         # Don't lock message_mutex here

@@ -1,2 +1,3 @@
+paho-mqtt==1.6.1
 pylint==2.15.2
 pylint-json2html==0.4.0

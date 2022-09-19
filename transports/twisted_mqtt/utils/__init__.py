@@ -9,6 +9,8 @@ from .enums import (
 )
 from .exceptions import MalformedPacket, MQTTException, WebsocketConnectionError
 from .mixins import CallbackMixin
+from .packettypes import PacketTypes
+from .reasoncodes import ReasonCodes
 
 __all__ = [
     # General
@@ -45,5 +47,8 @@ __all__ = [
     "MQTTException",
     "WebsocketConnectionError",
     # Mixins
-    "CallbackMixin"
+    "CallbackMixin",
+    # Assorted
+    "PacketTypes",
+    "ReasonCodes"
 ]

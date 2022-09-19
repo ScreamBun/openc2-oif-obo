@@ -1,9 +1,8 @@
 import sys
 
 from typing import Any, NoReturn, Optional, Tuple, Union
-from .packettypes import PacketTypes
 from .utils import (
-    MQTTException,
+    MQTTException, PacketTypes,
     writeInt16, readInt16, writeInt32, readInt32, writeUTF, readUTF, writeBytes, readBytes
 )
 
