@@ -4,7 +4,7 @@ import uuid
 
 from collections import OrderedDict, deque
 from dataclasses import asdict
-from typing import Any, Callable, Deque, List, Literal, NoReturn, Optional, Tuple, Union
+from typing import Any, Callable, Deque, Generator, List, Literal, NoReturn, Optional, Tuple, Union
 from twisted.internet import reactor as Reactor
 from twisted.internet.endpoints import TCP4ClientEndpoint, TCP6ClientEndpoint
 from twisted.internet.protocol import Protocol, connectionDone
@@ -341,18 +341,19 @@ class MQTTProtocol(CallbackMixin, Protocol):
         return self._send_unsubscribe(False, topic_list, properties)
 
     # Packet Processing
-    def loop_write(self, max_packets: int = None) -> ErrorValues:
-        count = max_packets or len(self._out_packet)
-        for _ in range(0, count):
+    def loop_write(self, max_packets: int = None) -> Generator[ErrorValues, None, ErrorValues]:
+        count = max_packets if isinstance(max_packets, int) and max_packets > 0 else len(self._out_packet)
+        for idx in range(0, count):
             try:
                 rc = self._packet_write()
                 if rc == ErrorValues.AGAIN:
-                    return ErrorValues.SUCCESS
+                    yield ErrorValues.SUCCESS
                 if rc > 0:
-                    return self._loop_rc_handle(rc)
-                return ErrorValues.SUCCESS
-            finally:
-                return ErrorValues.SUCCESS
+                    yield self._loop_rc_handle(rc)
+                yield ErrorValues.SUCCESS
+            except Exception as err:
+                self._easy_log(LogLevels.ERR, "Write packet error: {}", err)
+        return ErrorValues.SUCCESS
 
     def _packet_handle(self) -> ErrorValues:
         cmd = self._in_packet.command & 0xF0
@@ -695,7 +696,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                 for m in self._out_messages.values():
                     m.timestamp = time_func()
                     if m.state == MessageStates.QUEUED:
-                        self.loop_write()  # Process outgoing messages that have just been queued up
+                        list(self.loop_write())  # Process outgoing messages that have just been queued up
                         return ErrorValues.SUCCESS
 
                     if m.qos == 0:
@@ -726,7 +727,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                                 rc = self._send_pubrel(m.mid)
                             if rc != 0:
                                 return rc
-            self.loop_write()  # Process outgoing messages that have just been queued up
+            list(self.loop_write())  # Process outgoing messages that have just been queued up
             return rc
         if 0 < result < 6:
             return ErrorValues.CONN_REFUSED
@@ -1075,7 +1076,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
             packet=packet,
             info=info
         ))
-        return self.loop_write()
+        return list(self.loop_write(1))[0]
 
     def _packet_write(self) -> ErrorValues:
         while True:
