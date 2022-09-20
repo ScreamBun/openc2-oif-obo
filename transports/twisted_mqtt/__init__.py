@@ -1,5 +1,7 @@
 """
-Twisted MQTT based on Paho MQTT v1.6.1 - https://github.com/eclipse/paho.mqtt.python/tree/v1.6.1
+Twisted MQTT based on:
+- primarily - Paho MQTT v1.6.1 - https://github.com/eclipse/paho.mqtt.python/tree/v1.6.1
+- Twisted-MWTT - https://github.com/astrorafael/twisted-mqtt
 """
 from .utils import Versions
 from .factory import MQTTFactory

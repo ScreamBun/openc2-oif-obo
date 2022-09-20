@@ -1,13 +1,40 @@
 import string
 import struct
 
-from typing import Tuple, Union
+from typing import NoReturn, Tuple, Union
 from .enums import ConnAckCodes, ErrorValues
 from .exceptions import MalformedPacket
 from ..matcher import MQTTMatcher
 
 
 # Client/Factory Utils
+def base62(num: int, base: str = string.digits + string.ascii_letters, padding: int = 1) -> str:
+    """
+    Convert a number to base-62 representation.
+    """
+    assert num >= 0
+    digits = []
+    while num:
+        num, rest = divmod(num, 62)
+        digits.append(base[rest])
+    digits.extend(base[0] for _ in range(len(digits), padding))
+    return "".join(reversed(digits))
+
+
+def connack_string(connack_code: Union[int, ConnAckCodes]) -> str:
+    """
+    Return the string associated with a CONNACK result.
+    """
+    return {
+        ConnAckCodes.ACCEPTED: "Connection Accepted.",
+        ConnAckCodes.REFUSED_PROTOCOL_VERSION: "Connection Refused: unacceptable protocol version.",
+        ConnAckCodes.REFUSED_IDENTIFIER_REJECTED: "Connection Refused: identifier rejected.",
+        ConnAckCodes.REFUSED_SERVER_UNAVAILABLE: "Connection Refused: broker unavailable.",
+        ConnAckCodes.REFUSED_BAD_USERNAME_PASSWORD: "Connection Refused: bad user name or password.",
+        ConnAckCodes.REFUSED_NOT_AUTHORIZED: "Connection Refused: not authorised."
+    }.get(connack_code, "Connection Refused: unknown reason.")
+
+
 def error_string(mqtt_errno: Union[int, ErrorValues]) -> str:
     """
     Return the error string associated with a mqtt error number.
@@ -31,33 +58,6 @@ def error_string(mqtt_errno: Union[int, ErrorValues]) -> str:
         ErrorValues.QUEUE_SIZE: "Message queue full.",
         ErrorValues.KEEPALIVE: "Client or broker did not communicate in the keepalive interval."
     }.get(mqtt_errno, "Unknown error.")
-
-
-def connack_string(connack_code: Union[int, ConnAckCodes]) -> str:
-    """
-    Return the string associated with a CONNACK result.
-    """
-    return {
-        ConnAckCodes.ACCEPTED: "Connection Accepted.",
-        ConnAckCodes.REFUSED_PROTOCOL_VERSION: "Connection Refused: unacceptable protocol version.",
-        ConnAckCodes.REFUSED_IDENTIFIER_REJECTED: "Connection Refused: identifier rejected.",
-        ConnAckCodes.REFUSED_SERVER_UNAVAILABLE: "Connection Refused: broker unavailable.",
-        ConnAckCodes.REFUSED_BAD_USERNAME_PASSWORD: "Connection Refused: bad user name or password.",
-        ConnAckCodes.REFUSED_NOT_AUTHORIZED: "Connection Refused: not authorised."
-    }.get(connack_code, "Connection Refused: unknown reason.")
-
-
-def base62(num: int, base: str = string.digits + string.ascii_letters, padding: int = 1) -> str:
-    """
-    Convert a number to base-62 representation.
-    """
-    assert num >= 0
-    digits = []
-    while num:
-        num, rest = divmod(num, 62)
-        digits.append(base[rest])
-    digits.extend(base[0] for _ in range(len(digits), padding))
-    return "".join(reversed(digits))
 
 
 def topic_matches_sub(sub: str, topic: Union[bytes, str]) -> bool:
@@ -91,10 +91,34 @@ def topic_wildcard_len_check(topic: bytes) -> ErrorValues:
     return ErrorValues.SUCCESS
 
 
+# PDU Utils
+def pack_remaining_length(packet: bytearray, remaining_length: int) -> bytearray:
+    remaining_bytes = []
+    while True:
+        byte = remaining_length % 128
+        remaining_length = remaining_length // 128
+        # If there are more digits to encode, set the top bit of this digit
+        if remaining_length > 0:
+            byte |= 0x80
+
+        remaining_bytes.append(byte)
+        packet.append(byte)
+        if remaining_length == 0:
+            # FIXME - this doesn't deal with incorrectly large payloads
+            return packet
+
+
+def pack_str16(packet: bytearray, data: Union[bytes, str]) -> NoReturn:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    packet.extend(struct.pack("!H", len(data)))
+    packet.extend(data)
+
+
 # Properties Utils
-def writeInt16(val: int) -> bytes:
-    # serialize a 16-bit integer to network format
-    return struct.pack("!H", val)
+def readBytes(buffer: bytes) -> Tuple[bytes, int]:
+    length = readInt16(buffer)
+    return buffer[2:2+length], length+2
 
 
 def readInt16(buf: bytes) -> int:
@@ -102,20 +126,9 @@ def readInt16(buf: bytes) -> int:
     return struct.unpack("!H", buf[:2])[0]
 
 
-def writeInt32(val: int) -> bytes:
-    # serialize a 32-bit integer to network format
-    return struct.pack("!L", val)
-
-
 def readInt32(buf: bytes) -> int:
     # deserialize a 32-bit integer from network format
     return struct.unpack("!L", buf[:4])[0]
-
-
-def writeUTF(data: Union[bytes, str]) -> bytes:
-    # data could be a string, or bytes. If string, encode into bytes with utf-8
-    data = data if isinstance(data, bytes) else bytes(data, "utf-8")
-    return writeInt16(len(data)) + data
 
 
 def readUTF(buffer: bytes, maxlen: int) -> Tuple[str, int]:
@@ -143,6 +156,18 @@ def writeBytes(buffer: bytes) -> bytes:
     return writeInt16(len(buffer)) + buffer
 
 
-def readBytes(buffer: bytes) -> Tuple[bytes, int]:
-    length = readInt16(buffer)
-    return buffer[2:2+length], length+2
+def writeInt16(val: int) -> bytes:
+    # serialize a 16-bit integer to network format
+    return struct.pack("!H", val)
+
+
+def writeInt32(val: int) -> bytes:
+    # serialize a 32-bit integer to network format
+    return struct.pack("!L", val)
+
+
+def writeUTF(data: Union[bytes, str]) -> bytes:
+    # data could be a string, or bytes. If string, encode into bytes with utf-8
+    data = data if isinstance(data, bytes) else bytes(data, "utf-8")
+    return writeInt16(len(data)) + data
+

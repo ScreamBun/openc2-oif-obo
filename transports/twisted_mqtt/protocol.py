@@ -21,7 +21,7 @@ from .utils import (
     InPacket, OutPacket,  # Dataclasses
     CallbackMixin,  # Mixins
     ReasonCodes,  # Assorted
-    base62, filter_wildcard_len_check, topic_wildcard_len_check  # Utils
+    base62, filter_wildcard_len_check, pack_remaining_length, pack_str16, topic_wildcard_len_check  # Utils
 )
 
 # Types
@@ -42,7 +42,6 @@ try:
     time_func = time.monotonic
 except AttributeError:
     time_func = time.time
-
 
 
 class MQTTProtocol(CallbackMixin, Protocol):
@@ -144,7 +143,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
             self._easy_log(LogLevels.INFO, "Connected to {}", self.broker)
 
     def connectionLost(self, reason: Failure = connectionDone) -> NoReturn:
-        self._easy_log(LogLevels.DEBUG, "--- Connection to MQTT Broker lost: {}", reason.getErrorMessage())
+        self._easy_log(LogLevels.DEBUG, "Connection to MQTT Broker lost: {}", reason.getErrorMessage())
         self.connect()
 
     def dataReceived(self, data: bytes) -> ErrorValues:
@@ -172,7 +171,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
 
     # MQTT Interface
     def connect(self, clean_start: int = MQTT_CLEAN_START_FIRST_ONLY, properties: Optional[Properties] = None) -> NoReturn:
-        self._easy_log(LogLevels.DEBUG, "--- Connect to MQTT Broker {} with {}", self.addr, self._protocol.name)
+        self._easy_log(LogLevels.DEBUG, "Connect to MQTT Broker {} with {}", self.addr, self._protocol.name)
         if self._protocol == Versions.v5:
             self._mqttv5_first_connect = True
         else:
@@ -342,16 +341,18 @@ class MQTTProtocol(CallbackMixin, Protocol):
         return self._send_unsubscribe(False, topic_list, properties)
 
     # Packet Processing
-    def loop_write(self, max_packets: int = 1) -> ErrorValues:
-        try:
-            rc = self._packet_write()
-            if rc == ErrorValues.AGAIN:
+    def loop_write(self, max_packets: int = None) -> ErrorValues:
+        count = max_packets or len(self._out_packet)
+        for _ in range(0, count):
+            try:
+                rc = self._packet_write()
+                if rc == ErrorValues.AGAIN:
+                    return ErrorValues.SUCCESS
+                if rc > 0:
+                    return self._loop_rc_handle(rc)
                 return ErrorValues.SUCCESS
-            if rc > 0:
-                return self._loop_rc_handle(rc)
-            return ErrorValues.SUCCESS
-        finally:
-            return ErrorValues.SUCCESS
+            finally:
+                return ErrorValues.SUCCESS
 
     def _packet_handle(self) -> ErrorValues:
         cmd = self._in_packet.command & 0xF0
@@ -428,8 +429,8 @@ class MQTTProtocol(CallbackMixin, Protocol):
             packed_properties = b"\x00" if properties is None else properties.pack()
             remaining_length += len(packed_properties)
 
-        self._pack_remaining_length(packet, remaining_length)
-        self._pack_str16(packet, topic)
+        pack_remaining_length(packet, remaining_length)
+        pack_str16(packet, topic)
         if qos > 0:
             # For message id
             packet.extend(struct.pack("!H", mid))
@@ -503,22 +504,22 @@ class MQTTProtocol(CallbackMixin, Protocol):
 
         command = MessageTypes.CONNECT
         packet = bytearray([command, ])
-        self._pack_remaining_length(packet, remaining_length)
+        pack_remaining_length(packet, remaining_length)
         packet.extend(struct.pack("!H" + str(len(protocol)) + "sBBH", len(protocol), protocol, proto_ver, connect_flags, keepalive))
         if self._protocol == Versions.v5:
             packet += packed_connect_properties
 
-        self._pack_str16(packet, self._client_id)
+        pack_str16(packet, self._client_id)
         if self._will:
             if self._protocol == Versions.v5:
                 packet += packed_will_properties
-            self._pack_str16(packet, self._will_topic)
-            self._pack_str16(packet, self._will_payload)
+            pack_str16(packet, self._will_topic)
+            pack_str16(packet, self._will_payload)
 
         if self._username is not None:
-            self._pack_str16(packet, self._username)
+            pack_str16(packet, self._username)
             if self._password is not None:
-                self._pack_str16(packet, self._password)
+                pack_str16(packet, self._password)
 
         self._keepalive = keepalive
         log_args = [
@@ -550,7 +551,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                     packed_props = properties.pack()
                     remaining_length += len(packed_props)
 
-        self._pack_remaining_length(packet, remaining_length)
+        pack_remaining_length(packet, remaining_length)
         if self._protocol == Versions.v5:
             if reasoncode is not None:
                 packet += reasoncode.pack()
@@ -572,7 +573,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
 
         command = MessageTypes.SUBSCRIBE | (dup << 3) | 0x2
         packet = bytearray([command, ])
-        self._pack_remaining_length(packet, remaining_length)
+        pack_remaining_length(packet, remaining_length)
         local_mid = self._mid_generate()
         packet.extend(struct.pack("!H", local_mid))
 
@@ -580,7 +581,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
             packet += packed_subscribe_properties
 
         for t, q in topics:
-            self._pack_str16(packet, t)
+            pack_str16(packet, t)
             if self._protocol == Versions.v5:
                 packet += q.pack()
             else:
@@ -589,7 +590,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
         self._easy_log(LogLevels.DEBUG, "Sending SUBSCRIBE (d{}, m{}) {}", dup, local_mid, topics)
         return self._packet_queue(command, packet, local_mid, 1), local_mid
 
-    def _send_unsubscribe(self, dup: bool, topics: List[str], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
+    def _send_unsubscribe(self, dup: bool, topics: List[bytes], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
         remaining_length = 2
         if self._protocol == Versions.v5:
             if properties is None:
@@ -603,7 +604,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
         command = MessageTypes.UNSUBSCRIBE | (dup << 3) | 0x2
         packet = bytearray()
         packet.append(command)
-        self._pack_remaining_length(packet, remaining_length)
+        pack_remaining_length(packet, remaining_length)
         local_mid = self._mid_generate()
         packet.extend(struct.pack("!H", local_mid))
 
@@ -611,7 +612,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
             packet += packed_unsubscribe_properties
 
         for t in topics:
-            self._pack_str16(packet, t)
+            pack_str16(packet, t)
 
         # topics_repr = ", ".join("'"+topic.decode("utf8")+"'" for topic in topics)
         if self._protocol == Versions.v5:
@@ -725,7 +726,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                                 rc = self._send_pubrel(m.mid)
                             if rc != 0:
                                 return rc
-                    self.loop_write()  # Process outgoing messages that have just been queued up
+            self.loop_write()  # Process outgoing messages that have just been queued up
             return rc
         if 0 < result < 6:
             return ErrorValues.CONN_REFUSED
@@ -1065,27 +1066,6 @@ class MQTTProtocol(CallbackMixin, Protocol):
                 self._last_mid = 1
             return self._last_mid
 
-    def _pack_remaining_length(self, packet: bytearray, remaining_length: int) -> bytearray:
-        remaining_bytes = []
-        while True:
-            byte = remaining_length % 128
-            remaining_length = remaining_length // 128
-            # If there are more digits to encode, set the top bit of this digit
-            if remaining_length > 0:
-                byte |= 0x80
-
-            remaining_bytes.append(byte)
-            packet.append(byte)
-            if remaining_length == 0:
-                # FIXME - this doesn't deal with incorrectly large payloads
-                return packet
-
-    def _pack_str16(self, packet: bytearray, data: Union[bytes, str]) -> NoReturn:
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        packet.extend(struct.pack("!H", len(data)))
-        packet.extend(data)
-
     def _packet_queue(self, command: int, packet: Union[bytes, bytearray], mid: int, qos: QOS, info: Optional[MQTTMessageInfo] = None) -> ErrorValues:
         self._out_packet.append(OutPacket(
             command=command,
@@ -1103,6 +1083,13 @@ class MQTTProtocol(CallbackMixin, Protocol):
                 packet = self._out_packet.popleft()
             except IndexError:
                 return ErrorValues.SUCCESS
+
+            if self._state == ConnectionStates.NEW and packet.command == MessageTypes.CONNECT:
+                pass
+            elif self._state != ConnectionStates.CONNECTED:
+                self._easy_log(LogLevels.DEBUG, "Queued packet: connection({}) -> {}", self._state.name, packet)
+                self._out_packet.appendleft(packet)
+                return ErrorValues.AGAIN
 
             try:
                 data = bytes(packet.packet[packet.pos:])

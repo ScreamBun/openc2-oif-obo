@@ -1,7 +1,11 @@
 from .context import DummyLock
 from .general import (
+    # Client/Factory Utils
     base62, connack_string, error_string, filter_wildcard_len_check, topic_matches_sub, topic_wildcard_len_check,
-    readInt16, writeInt16, readInt32, writeInt32, readBytes, writeBytes, readUTF, writeUTF
+    # PDU Utils
+    pack_remaining_length, pack_str16,
+    # Properties Utils
+    readBytes, readInt16, readInt32, readUTF, writeBytes, writeInt16, writeInt32, writeUTF
 )
 from .dataclasses import Packet, InPacket, OutPacket, Callbacks
 from .enums import (
@@ -13,20 +17,24 @@ from .packettypes import PacketTypes
 from .reasoncodes import ReasonCodes
 
 __all__ = [
-    # General
+    # Client/Factory Utils
     "base62",
     "connack_string",
     "error_string",
     "filter_wildcard_len_check",
     "topic_matches_sub",
     "topic_wildcard_len_check",
-    "readInt16",
-    "writeInt16",
-    "readInt32",
-    "writeInt32",
+    # PDU Utils
+    "pack_remaining_length",
+    "pack_str16",
+    # Properties Utils
     "readBytes",
-    "writeBytes",
+    "readInt16",
+    "readInt32",
     "readUTF",
+    "writeBytes",
+    "writeInt16",
+    "writeInt32",
     "writeUTF",
     # Dataclasses
     "Callbacks",
