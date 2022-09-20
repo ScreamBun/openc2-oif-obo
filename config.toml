@@ -1,6 +1,0 @@
-[mqtt]
-broker = "tcp:localhost:1883"
-
-[kevin]
-name = "test1"
-var = "test2"

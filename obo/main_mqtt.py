@@ -1,46 +1,17 @@
 import json
-import sys
 
 from time import time
 from typing import Any
 from twisted.internet import reactor
-from twisted.logger import (
-    Logger, LogLevel, FilteringLogObserver, LogLevelFilterPredicate, globalLogBeginner, textFileLogObserver,
-)
+from twisted.logger import Logger
+# Local imports
 from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, MQTTService, Versions
+from utils import get_config_data, setLogLevel, startLogging
 
-logLevelFilterPredicate = LogLevelFilterPredicate(defaultLogLevel=LogLevel.info)
-BROKER = "tcp:mosquitto.olympus.mtn:1883"
-# BROKER = "tcp:localhost:1883"
 subs = [
     ("oc2/cmd", 1),
     ("oc2/cmd/all", 1)
 ]
-
-
-def startLogging(console=True, filepath=None):
-    """
-    Starts the global Twisted logger subsystem with maybe
-    stdout and/or a file specified in the config file
-    """
-    global logLevelFilterPredicate
-
-    observers = []
-    if console:
-        observers.append(FilteringLogObserver(observer=textFileLogObserver(sys.stdout), predicates=[logLevelFilterPredicate]))
-
-    if filepath is not None and filepath != "":
-        observers.append(FilteringLogObserver(observer=textFileLogObserver(open(filepath, 'a')), predicates=[logLevelFilterPredicate]))
-    globalLogBeginner.beginLoggingTo(observers)
-
-
-def setLogLevel(namespace=None, levelStr='info'):
-    """
-    Set a new log level for a given namespace
-    LevelStr is: 'critical', 'error', 'warn', 'info', 'debug'
-    """
-    level = LogLevel.levelWithName(levelStr)
-    logLevelFilterPredicate.setLogLevelForNamespace(namespace=namespace, level=level)
 
 
 def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
@@ -66,12 +37,16 @@ def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
 
 
 if __name__ == "__main__":
+    # Load config
+    config = get_config_data()
+
+    # Setup logging
     log = Logger()
     startLogging()
-    setLogLevel(namespace='mqtt', levelStr='debug')
     setLogLevel(namespace='__main__', levelStr='debug')
+    setLogLevel(namespace='mqtt', levelStr='debug')
 
-    print("Startup")
+    # Setup Reactor
     factory = MQTTFactory(
         reactor=reactor,
         client_id="Twisted-368207455685",
@@ -86,5 +61,6 @@ if __name__ == "__main__":
         port=1883,
         factory=factory,
     )
+
     print("Reactor Running")
     reactor.run()

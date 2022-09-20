@@ -1,6 +1,7 @@
 import time
 import paho.mqtt.client as paho
-broker="localhost"
+
+broker = "localhost"
 # broker="mosquitto.olympus.mtn"
 
 # def on_message(client, userdata, message):
@@ -8,7 +9,7 @@ broker="localhost"
 #     print("received message =", str(message.payload.decode("utf-8")))
 
 # client= paho.Client("non-Twisted-test")
-client= paho.Client("Twisted-368207455685")
+client = paho.Client("Twisted-368207455685")
 
 # client.on_message=on_message
 

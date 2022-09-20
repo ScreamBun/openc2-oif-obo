@@ -3,7 +3,9 @@ from autobahn.twisted.websocket import WebSocketServerFactory, WebSocketServerPr
 from autobahn.websocket.types import ConnectionRequest
 from twisted.internet import reactor, ssl
 
-__all__ = ["setupWebSocket"]
+__all__ = [
+    "setupWebSocket"
+]
 
 
 class WebSocketProtocol(WebSocketServerProtocol):

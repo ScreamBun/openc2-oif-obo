@@ -1,0 +1,8 @@
+[mqtt]
+# host = "localhost"
+host = "mosquito.olympus.mtn"
+port = 1883
+
+[kevin]
+name = "test1"
+var = "test2"
