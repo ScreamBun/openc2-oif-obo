@@ -5,4 +5,4 @@ port = 1883
 [https]
 host = "localhost"
 port = 8080
-paths = ["getCmd", "postCmd"]
+paths = ["getOc2Cmd", "postOc2Cmd"]

@@ -1,4 +1,6 @@
+import json
 from typing import List, NoReturn
+
 from twisted.internet import reactor as Reactor, ssl
 from twisted.logger import Logger
 from twisted.web.resource import Resource
@@ -23,11 +25,16 @@ class WebProtocol(Resource):
         return b"hit"
 
     def render_POST(self, request):
-        print("HIT 1")
-        for k, v in request.__dict__:
-            print("HIT 2")
-            log.info(f"{k}: {v}")
-        # Do some work
+
+        if request.content and request.content.getvalue():
+            content_data = request.content.getvalue()
+            json_dict = json.loads(content_data)
+            json_formatted_str = json.dumps(json_dict, indent=2)
+            # log.info(json_formatted_str)  #TODO: Unable to log json objects
+            print(json_formatted_str)
+
+            # Do some work
+
         return request.content.getvalue()
 
 

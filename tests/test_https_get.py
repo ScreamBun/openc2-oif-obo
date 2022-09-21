@@ -1,6 +1,6 @@
 import httplib2
 
-URL = 'http://localhost:8080/getCmd'
+URL = 'http://localhost:8080/getOc2Cmd'
 
 if __name__ == "__main__":
     h = httplib2.Http()
