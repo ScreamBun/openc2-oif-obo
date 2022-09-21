@@ -1,26 +1,27 @@
 from typing import NoReturn, Union
 from autobahn.twisted.websocket import WebSocketServerFactory, WebSocketServerProtocol
 from autobahn.websocket.types import ConnectionRequest
+from twisted.logger import Logger
 from twisted.internet import reactor, ssl
 
-__all__ = [
-    "setupWebSocket"
-]
+__all__ = ["setupWebSocket"]
+
+log = Logger(namespace="websockets")
 
 
 class WebSocketProtocol(WebSocketServerProtocol):
     def onOpen(self):
-        print("WebSocket connection open")
+        log.info("WebSocket connection open")
 
     def onClose(self, wasClean: bool, code: int, reason: str):
-        print("WebSocket connection closed")
+        log.info("WebSocket connection closed")
 
     def onConnect(self, request: ConnectionRequest):
-        print(f"WebSocket connection request: {request}")
+        log.info(f"WebSocket connection request: {request}")
 
     def onMessage(self, payload: Union[bytes, str], isBinary: bool):
         # self.sendMessage(payload, isBinary)
-        print(f"Websocket Received: {payload}")
+        log.info(f"Websocket Received: {payload}")
 
 
 class WebSocketFactory(WebSocketServerFactory):
@@ -32,6 +33,6 @@ def setupWebSocket(core: reactor, port: int) -> NoReturn:
     core.listenTCP(port, factory)
 
 
-def setupWebSocketSSL(core: reactor, port: int, key: str, crt: str) -> NoReturn:
+def setupWebSocketSSL(core: reactor, port: int, key: str, cert: str) -> NoReturn:
     factory = WebSocketServerFactory()
-    core.listenSSL(port, factory, ssl.DefaultOpenSSLContextFactory(key, crt))
+    core.listenSSL(port, factory, ssl.DefaultOpenSSLContextFactory(key, cert))

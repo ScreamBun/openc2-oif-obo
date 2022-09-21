@@ -5,8 +5,9 @@ from typing import Any
 from twisted.internet import reactor
 from twisted.logger import Logger
 # Local imports
-from transports.twisted_http import setupWebServer
+from transports.twisted_http import setupWebServer, setupWebServerSSL
 from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, MQTTService, Versions
+from transports.twisted_websockets import setupWebSocket, setupWebSocketSSL
 from utils import get_config_data, setLogLevel, startLogging
 
 subs = [
@@ -44,30 +45,53 @@ if __name__ == '__main__':
     # Setup logging
     log = Logger()
     startLogging()
-    setLogLevel(namespace='__main__', levelStr='debug')
-    setLogLevel(namespace='http', levelStr='debug')
-    setLogLevel(namespace='mqtt', levelStr='debug')
+    loggers = ("__main__", "http", "mqtt", "websockets")
+    level = "debug"
+    for name in loggers:
+        setLogLevel(namespace=name, levelStr=level)
 
     # Setup reactor
     print(config)
-    # HTTP
-    setupWebServer(reactor, config.https.port)
+    # HTTPS
+    if config.https:
+        if config.https.key and config.https.cert:
+            # Secure
+            setupWebServerSSL(reactor, config.https.port, config.https.key, config.https.cert)
+        else:
+            # Unsecure
+            setupWebServer(reactor, config.https.port)
+
+    # WebSockets
+    if config.websockets:
+        if config.websockets.key and config.websockets.cert:
+            # Secure
+            setupWebSocketSSL(reactor, config.websockets.port, config.websockets.key, config.websockets.cert)
+        else:
+            # Unsecure
+            setupWebSocket(reactor, config.websockets.port)
 
     # MQTT
-    factory = MQTTFactory(
-        reactor=reactor,
-        client_id="Twisted-368207455685",
-        subs=subs,
-        version=Versions.v5
-    )
-    factory.addCallback(onMessage, "on_message")
-    service = MQTTService(
-        reactor=reactor,
-        # host="localhost",
-        host="mosquitto.olympus.mtn",
-        port=1883,
-        factory=factory,
-    )
+    if config.mqtt:
+        factory = MQTTFactory(
+            reactor=reactor,
+            client_id="Twisted-368207455685",
+            subs=subs,
+            version=Versions.v5
+        )
+        factory.username_pw_set(
+            username=config.mqtt.username,
+            password=config.mqtt.password
+        )
+        factory.addCallback(onMessage, "on_message")
+        service = MQTTService(
+            reactor=reactor,
+            # host="localhost",
+            host="mosquitto.olympus.mtn",
+            port=1883,
+            key=config.mqtt.cert,
+            cert=config.mqtt.key,
+            factory=factory,
+        )
 
     print("Reactor Running")
     reactor.run()

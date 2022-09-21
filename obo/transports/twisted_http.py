@@ -1,12 +1,15 @@
 from typing import List, NoReturn
+from twisted.internet import reactor as Reactor, ssl
+from twisted.logger import Logger
 from twisted.web.resource import Resource
 from twisted.web.server import Site
-from twisted.internet import reactor as Reactor, ssl
 
 __all__ = [
     "setupWebServer",
     "setupWebServerSSL"
 ]
+
+log = Logger(namespace="https")
 
 
 class WebProtocol(Resource):
@@ -21,7 +24,7 @@ class WebProtocol(Resource):
 
     def render_POST(self, request):
         for k, v in request.__dict__:
-            print(f"{k}: {v}")
+            log.info(f"{k}: {v}")
         # Do some work
         return request.content.getvalue()
 

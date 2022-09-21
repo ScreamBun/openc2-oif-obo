@@ -1,7 +1,7 @@
 from twisted.internet import reactor
 from twisted.logger import Logger
 # Local imports
-from transports.twisted_http import setupWebServer, setupWebServerSSL
+from transports.twisted_websockets import setupWebSocket, setupWebSocketSSL
 from utils import get_config_data, setLogLevel, startLogging
 
 
@@ -13,14 +13,14 @@ if __name__ == '__main__':
     log = Logger()
     startLogging()
     setLogLevel(namespace='__main__', levelStr='debug')
-    setLogLevel(namespace='http', levelStr='debug')
+    setLogLevel(namespace='websockets', levelStr='debug')
 
     # Setup reactor
     print(config)
-    if config.https.key and config.https.cert:
+    if config.websockets.key and config.websockets.cert:
         # Secure
-        setupWebServerSSL(reactor, config.https.port, config.https.key, config.https.cert)
+        setupWebSocketSSL(reactor, config.websockets.port, config.websockets.key, config.websockets.cert)
     else:
         # Unsecure
-        setupWebServer(reactor, config.https.port)
+        setupWebSocket(reactor, config.websockets.port)
     reactor.run()

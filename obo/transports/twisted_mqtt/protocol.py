@@ -96,15 +96,14 @@ class MQTTProtocol(CallbackMixin, Protocol):
     _subs: Subscriptions = []
     _mqttv5_first_connect: bool = True  # for clean_start == MQTT_CLEAN_START_FIRST_ONLY
     suppress_exceptions: bool = False  # For callbacks
+    __factory_props__ = (
+        "_reactor", "_protocol", "_userdata", "_client_id", "_subs", "_clean_session", "_username", "_password"
+    )
 
     def __init__(self, factory: "MQTTFactory", addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]) -> None:
         self.factory = factory
         self.addr = addr
         self.broker = f"mqtt://{addr.host}:{addr.port}"
-        # self._transport = self.factory._transport
-        self._protocol = self.factory._version
-        self._userdata = self.factory._userdata
-        self._client_id = self.factory._client_id
 
         self._in_packet = InPacket(
             command=0,
@@ -124,9 +123,9 @@ class MQTTProtocol(CallbackMixin, Protocol):
         self._on_message_filtered = MQTTMatcher()
 
         # Copy properties from factory
-        self.reactor = self.factory._reactor
-        self._subs = self.factory._subs
-        self._clean_session = self.factory._clean_session
+        for prop in self.__factory_props__:
+            val = getattr(self.factory, prop, None)
+            setattr(self, prop, val)
         self._clean_start = MQTT_CLEAN_START_FIRST_ONLY
         for field, val in asdict(self.factory._callbacks).items():
             if val:
@@ -561,7 +560,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
 
         return self._packet_queue(command, packet, 0, 0)
 
-    def _send_subscribe(self, dup: bool, topics: List[Tuple[str, Union[int, SubscribeOptions]]], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
+    def _send_subscribe(self, dup: bool, topics: List[Tuple[bytes, Union[int, SubscribeOptions]]], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:
         remaining_length = 2
         if self._protocol == Versions.v5:
             if properties is None:
@@ -581,14 +580,19 @@ class MQTTProtocol(CallbackMixin, Protocol):
         if self._protocol == Versions.v5:
             packet += packed_subscribe_properties
 
+        log_topics = []
         for t, q in topics:
             pack_str16(packet, t)
+            log_topic = f"'{t.decode('utf-8')}': "
             if self._protocol == Versions.v5:
                 packet += q.pack()
+                log_topic += f"{{{q.json()}}}"
             else:
                 packet.append(q)
+                log_topic += f"{q}"
+            log_topics.append(log_topic)
 
-        self._easy_log(LogLevels.DEBUG, "Sending SUBSCRIBE (d{}, m{}) {}", dup, local_mid, topics)
+        self._easy_log(LogLevels.DEBUG, "Sending SUBSCRIBE (d{}, m{}) [{}]", dup, local_mid, ", ".join(log_topics))
         return self._packet_queue(command, packet, local_mid, 1), local_mid
 
     def _send_unsubscribe(self, dup: bool, topics: List[bytes], properties: Optional[Properties] = None) -> Tuple[ErrorValues, int]:

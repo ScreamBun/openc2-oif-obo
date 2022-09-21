@@ -53,6 +53,10 @@ if __name__ == "__main__":
         subs=subs,
         version=Versions.v5
     )
+    factory.username_pw_set(
+        username=config.mqtt.username,
+        password=config.mqtt.password
+    )
     factory.addCallback(onMessage, "on_message")
     service = MQTTService(
         reactor=reactor,

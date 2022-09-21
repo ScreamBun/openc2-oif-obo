@@ -10,8 +10,8 @@ from serde.toml import from_toml, to_toml
 @serde
 @dataclass
 class MQTTConfig:
-    host: str = "localhost"
-    port: int = 1883
+    host: str
+    port: int
     username: Optional[str] = None
     password: Optional[str] = None
     key: Optional[str] = None
@@ -21,7 +21,7 @@ class MQTTConfig:
 @serde
 @dataclass
 class HTTPSConfig:
-    port: int = 8080
+    port: int
     paths: Optional[List[str]] = field(default_factory=list)
     key: Optional[str] = None
     cert: Optional[str] = None
@@ -29,25 +29,33 @@ class HTTPSConfig:
 
 @serde
 @dataclass
-class KevinConfig:
-    name: str
-    var: str
+class WebSocketsConfig:
+    port: int
+    key: Optional[str] = None
+    cert: Optional[str] = None
 
 
 @serde
 @dataclass
 class Config:
-    https: Optional[HTTPSConfig] = HTTPSConfig()
-    mqtt: Optional[MQTTConfig] = MQTTConfig()
-    # Dev options
-    kevin: Optional[KevinConfig] = None
+    # Transport Config
+    https: Optional[HTTPSConfig] = None
+    mqtt: Optional[MQTTConfig] = None
+    websockets: Optional[WebSocketsConfig] = None
+    # Config Path
+    __path__: Union[bytes, str, os.PathLike] = field(repr=False, default=None, metadata={'serde_skip': True})
 
     @classmethod
     def load(cls, path: Union[bytes, str, os.PathLike]) -> "Config":
         with open(path, "r") as f:
-            return from_toml(cls, f.read())
+            cfg = from_toml(cls, f.read())
+        cfg.__path__ = path
+        return cfg
 
-    def dump(self, path: Union[bytes, str, os.PathLike]) -> NoReturn:
+    def dump(self, path: Optional[Union[bytes, str, os.PathLike]] = None) -> NoReturn:
+        path = path or self.__path__
+        if path is None:
+            raise IOError("Config path is not specified")
         with open(path, "w") as f:
             f.write(to_toml(self))
 

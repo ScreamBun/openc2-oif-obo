@@ -24,19 +24,24 @@ class MQTTFactory(ReconnectingClientFactory):
     _addr: Union[TCP4ClientEndpoint, TCP6ClientEndpoint]
     _broker: str
     _service: MQTTService
-    _version: Versions
+    _protocol: Versions
     _userdata: Any
     _client_id: bytes
+    # Connection
     _keepalive = 60
     _connect_timeout = 5.0
     _clean_session: bool = None
+    # Authentication & Security
+    _username: bytes = None
+    _password: bytes = None
+    # Assorted
     _subs: Subscriptions = []
     _callbacks: Callbacks
 
     def __init__(self, reactor: Reactor, client_id: Union[bytes, str] = "", clean_session=None, userdata=None, version=Versions.v311, subs: Subscriptions = None, callbacks=Callbacks()) -> None:
         super().__init__()
         self._reactor = reactor
-        self._version = version
+        self._protocol = version
         self._userdata = userdata
         self._keepalive = 60
         self._connect_timeout = 5.0
@@ -94,6 +99,11 @@ class MQTTFactory(ReconnectingClientFactory):
             log.info("Connected to broker at {broker}", broker=self._broker)
 
     # MQTT pass through
+    def username_pw_set(self, username: str, password: Optional[str] = None) -> NoReturn:
+        # [MQTT-3.1.3-11] User name must be UTF-8 encoded string
+        self._username = None if username is None else username.encode("utf-8")
+        self._password = password.encode("utf-8") if isinstance(password, str) else password
+
     def addCallback(self, fun: Callable, key: str = None) -> Callable:
         key = key or fun.__name__
         if key in [f.name for f in fields(self._callbacks)]:
