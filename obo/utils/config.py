@@ -10,8 +10,10 @@ from serde.toml import from_toml, to_toml
 @serde
 @dataclass
 class MQTTConfig:
+    client_id: str
     host: str
     port: int
+    log_level: str
     username: Optional[str] = None
     password: Optional[str] = None
     key: Optional[str] = None
@@ -22,6 +24,7 @@ class MQTTConfig:
 @dataclass
 class HTTPSConfig:
     port: int
+    log_level: str
     paths: Optional[List[str]] = field(default_factory=list)
     key: Optional[str] = None
     cert: Optional[str] = None
@@ -30,7 +33,9 @@ class HTTPSConfig:
 @serde
 @dataclass
 class WebSocketsConfig:
+    host: str
     port: int
+    log_level: str
     key: Optional[str] = None
     cert: Optional[str] = None
 

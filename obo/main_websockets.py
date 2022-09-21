@@ -1,26 +1,26 @@
 from twisted.internet import reactor
 from twisted.logger import Logger
+
+from obo.transports.twisted_websockets import setupWebSocket, setupWebSocketSSL
 # Local imports
-from transports.twisted_websockets import setupWebSocket, setupWebSocketSSL
 from utils import get_config_data, setLogLevel, startLogging
 
-
 if __name__ == '__main__':
-    # Load config
     config = get_config_data()
 
-    # Setup logging
+    if config.websockets:
+        print(config.websockets)
+
     log = Logger()
     startLogging()
-    setLogLevel(namespace='__main__', levelStr='debug')
-    setLogLevel(namespace='websockets', levelStr='debug')
+    setLogLevel(namespace='__main__', levelStr=config.websockets.log_level)
+    setLogLevel(namespace='websockets', levelStr=config.websockets.log_level)
 
-    # Setup reactor
-    print(config)
     if config.websockets.key and config.websockets.cert:
-        # Secure
-        setupWebSocketSSL(reactor, config.websockets.port, config.websockets.key, config.websockets.cert)
+        setupWebSocketSSL(reactor, config.websockets.host, config.websockets.port, config.websockets.key,
+                                    config.websockets.cert)
     else:
-        # Unsecure
-        setupWebSocket(reactor, config.websockets.port)
+        setupWebSocket(reactor, config.websockets.host, config.websockets.port)
+
+    log.info("Reactor Running")
     reactor.run()

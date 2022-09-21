@@ -24,7 +24,7 @@ def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
         "headers": {
             "request_id": "bee2166a-caf3-45f6-975f-7c14f6c53356",
             "created": round(time() * 1000),
-            "from": "Twisted1"
+            "from": config.mqtt.client_id
         },
         "body": {
             "openc2": {
@@ -39,10 +39,8 @@ def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
 
 
 if __name__ == '__main__':
-    # Load config
     config = get_config_data()
 
-    # Setup logging
     log = Logger()
     startLogging()
     loggers = ("__main__", "http", "mqtt", "websockets")
@@ -50,31 +48,27 @@ if __name__ == '__main__':
     for name in loggers:
         setLogLevel(namespace=name, levelStr=level)
 
-    # Setup reactor
     print(config)
-    # HTTPS
+
     if config.https:
+        log.info("Initializing HTTP")
         if config.https.key and config.https.cert:
-            # Secure
             setupWebServerSSL(reactor, config.https.port, config.https.key, config.https.cert)
         else:
-            # Unsecure
             setupWebServer(reactor, config.https.port)
 
-    # WebSockets
     if config.websockets:
+        log.info("Initializing Websockets")
         if config.websockets.key and config.websockets.cert:
-            # Secure
-            setupWebSocketSSL(reactor, config.websockets.port, config.websockets.key, config.websockets.cert)
+            setupWebSocketSSL(reactor, config.websockets.host, config.websockets.port, config.websockets.key, config.websockets.cert)
         else:
-            # Unsecure
-            setupWebSocket(reactor, config.websockets.port)
+            setupWebSocket(reactor, config.websockets.host, config.websockets.port)
 
-    # MQTT
     if config.mqtt:
+        log.info("Initializing MQTT")
         factory = MQTTFactory(
             reactor=reactor,
-            client_id="Twisted-368207455685",
+            client_id=config.mqtt.client_id,
             subs=subs,
             version=Versions.v5
         )
@@ -85,13 +79,12 @@ if __name__ == '__main__':
         factory.addCallback(onMessage, "on_message")
         service = MQTTService(
             reactor=reactor,
-            # host="localhost",
-            host="mosquitto.olympus.mtn",
-            port=1883,
+            host=config.mqtt.host,
+            port=config.mqtt.port,
             key=config.mqtt.cert,
             cert=config.mqtt.key,
             factory=factory,
         )
 
-    print("Reactor Running")
+    log.info("Reactor Running")
     reactor.run()

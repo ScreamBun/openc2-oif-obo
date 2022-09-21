@@ -22,7 +22,7 @@ def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
         "headers": {
             "request_id": "bee2166a-caf3-45f6-975f-7c14f6c53356",
             "created": round(time() * 1000),
-            "from": "Twisted1"
+            "from": config.mqtt.client_id
         },
         "body": {
             "openc2": {
@@ -37,19 +37,19 @@ def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
 
 
 if __name__ == "__main__":
-    # Load config
     config = get_config_data()
 
-    # Setup logging
+    if config.mqtt:
+        print(config.mqtt)
+
     log = Logger()
     startLogging()
     setLogLevel(namespace='__main__', levelStr='debug')
     setLogLevel(namespace='mqtt', levelStr='debug')
 
-    # Setup Reactor
     factory = MQTTFactory(
         reactor=reactor,
-        client_id="Twisted-368207455685",
+        client_id=config.mqtt.client_id,
         subs=subs,
         version=Versions.v5
     )
@@ -60,9 +60,8 @@ if __name__ == "__main__":
     factory.addCallback(onMessage, "on_message")
     service = MQTTService(
         reactor=reactor,
-        # host="localhost",
-        host="mosquitto.olympus.mtn",
-        port=1883,
+        host=config.mqtt.host,
+        port=config.mqtt.port,
         factory=factory,
     )
 
