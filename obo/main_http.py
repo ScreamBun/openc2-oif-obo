@@ -19,8 +19,8 @@ if __name__ == '__main__':
     print(config)
     if config.https.key and config.https.cert:
         # Secure
-        setupWebServerSSL(reactor, config.https.port, config.https.key, config.https.cert)
+        setupWebServerSSL(reactor, config.https.port, config.https.key, config.https.cert, config.https.paths)
     else:
         # Unsecure
-        setupWebServer(reactor, config.https.port)
+        setupWebServer(reactor, config.https.port, config.https.paths)
     reactor.run()

@@ -9,7 +9,7 @@ TESTDATA = {
         'updated': str(datetime.now()),
     }
 }
-URL = 'http://localhost:8880/form'
+URL = 'http://localhost:8080/postCmd'
 
 if __name__ == "__main__":
     jsondata = simplejson.dumps(TESTDATA)

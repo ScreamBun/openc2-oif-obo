@@ -23,7 +23,9 @@ class WebProtocol(Resource):
         return b"hit"
 
     def render_POST(self, request):
+        print("HIT 1")
         for k, v in request.__dict__:
+            print("HIT 2")
             log.info(f"{k}: {v}")
         # Do some work
         return request.content.getvalue()
