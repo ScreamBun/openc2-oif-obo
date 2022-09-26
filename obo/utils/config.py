@@ -52,7 +52,7 @@ class Config:
 
     @classmethod
     def load(cls, path: Union[bytes, str, os.PathLike]) -> "Config":
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             cfg = from_toml(cls, f.read())
         cfg.__path__ = path
         return cfg
@@ -61,7 +61,7 @@ class Config:
         path = path or self.__path__
         if path is None:
             raise IOError("Config path is not specified")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(to_toml(self))
 
 

@@ -5,7 +5,7 @@ from typing import Any
 from twisted.internet import reactor
 from twisted.logger import Logger
 # Local imports
-from transports.twisted_http import setupWebServer, setupWebServerSSL
+from transports.twisted_https import setupWebServer, setupWebServerSSL
 from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, MQTTService, Versions
 from transports.twisted_websockets import setupWebSocket, setupWebSocketSSL
 from utils import get_config_data, setLogLevel, startLogging
@@ -43,22 +43,21 @@ if __name__ == '__main__':
 
     log = Logger()
     startLogging()
-    loggers = ("__main__", "http", "mqtt", "websockets")
+    loggers = ("__main__", "https", "mqtt", "websockets")
     level = "debug"
     for name in loggers:
         setLogLevel(namespace=name, levelStr=level)
-
-    print(config)
+    log.info(f"{config}")
 
     if config.https:
-        log.info("Initializing HTTP")
+        log.info("Initializing HTTPS")
         if config.https.key and config.https.cert:
             setupWebServerSSL(reactor, config.https.port, config.https.key, config.https.cert)
         else:
             setupWebServer(reactor, config.https.port)
 
     if config.websockets:
-        log.info("Initializing Websockets")
+        log.info("Initializing WebSockets")
         if config.websockets.key and config.websockets.cert:
             setupWebSocketSSL(reactor, config.websockets.host, config.websockets.port, config.websockets.key, config.websockets.cert)
         else:

@@ -67,7 +67,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
     _out_packet: Deque[OutPacket]
     _last_msg_in: float
     _last_msg_out: float
-    _pinger: Reactor.callLater = None
+    _pinger: Reactor.callLater = None  # pylint: disable=no-member
     _last_mid: int = 0
     _state: ConnectionStates
     _out_messages: OrderedDict
@@ -342,7 +342,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
     # Packet Processing
     def loop_write(self, max_packets: int = None) -> Generator[ErrorValues, None, ErrorValues]:
         count = max_packets if isinstance(max_packets, int) and max_packets > 0 else len(self._out_packet)
-        for idx in range(0, count):
+        for _ in range(0, count):
             try:
                 rc = self._packet_write()
                 if rc == ErrorValues.AGAIN:
@@ -350,7 +350,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                 if rc > 0:
                     yield self._loop_rc_handle(rc)
                 yield ErrorValues.SUCCESS
-            except Exception as err:
+            except Exception as err:  # pylint: disable=broad-except
                 self._easy_log(LogLevels.ERR, "Write packet error: {}", err)
         return ErrorValues.SUCCESS
 
@@ -647,8 +647,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
         if self._protocol == Versions.v5:
             flags, result = struct.unpack("!BB", self._in_packet.packet[1:3])
             if result == 1:
-                # This is probably a failure from a broker that doesn't support
-                # MQTT v5.
+                # This is probably a failure from a broker that doesn't support MQTT v5.
                 reason = 132  # Unsupported protocol version
                 properties = None
             else:
@@ -689,7 +688,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                             on_connect(self, self._userdata, flags_dict, reason, properties)
                         else:
                             on_connect(self, self._userdata, flags_dict, result)
-                    except Exception as err:
+                    except Exception as err:  # pylint: disable=broad-except
                         self._easy_log(LogLevels.ERR, "Caught exception in on_connect: {}", err)
                         if not self.suppress_exceptions:
                             raise
@@ -796,7 +795,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                             on_subscribe(self, self._userdata, mid, reasoncodes, properties)
                         else:
                             on_subscribe(self, self._userdata, mid, granted_qos)
-                    except Exception as err:
+                    except Exception as err:  # pylint: disable=broad-except
                         self._easy_log(LogLevels.ERR, "Caught exception in on_subscribe: {}", err)
                         if not self.suppress_exceptions:
                             raise
@@ -938,7 +937,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                             on_unsubscribe(self, self._userdata, mid, properties, reasoncodes)
                         else:
                             on_unsubscribe(self, self._userdata, mid)
-                    except Exception as err:
+                    except Exception as err:  # pylint: disable=broad-except
                         self._easy_log(LogLevels.ERR, "Caught exception in on_unsubscribe: {}", err)
                         if not self.suppress_exceptions:
                             raise
@@ -962,7 +961,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
             with self._in_callback_mutex:
                 try:
                     callback(self, self._userdata, message)
-                except Exception as err:
+                except Exception as err:  # pylint: disable=broad-except
                     self._easy_log(LogLevels.ERR, "Caught exception in user defined callback function {}: {}", callback.__name__, err)
                     if not self.suppress_exceptions:
                         raise
@@ -971,7 +970,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
             with self._in_callback_mutex:
                 try:
                     on_message(self, self._userdata, message)
-                except Exception as err:
+                except Exception as err:  # pylint: disable=broad-except
                     self._easy_log(LogLevels.ERR, "Caught exception in on_message: {}", err)
                     if not self.suppress_exceptions:
                         raise
@@ -982,7 +981,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                 with self._in_callback_mutex:
                     try:
                         on_connect_fail(self, self._userdata)
-                    except Exception as err:
+                    except Exception as err:  # pylint: disable=broad-except
                         self._easy_log(LogLevels.ERR, "Caught exception in on_connect_fail: {}", err)
 
     # Helpers
@@ -1007,7 +1006,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                             on_disconnect(self, self._userdata, rc, properties)
                         else:
                             on_disconnect(self, self._userdata, rc)
-                    except Exception as err:
+                    except Exception as err:  # pylint: disable=broad-except
                         self._easy_log(LogLevels.ERR, "Caught exception in on_disconnect: {}", err)
                         if not self.suppress_exceptions:
                             raise
@@ -1018,7 +1017,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
                 with self._in_callback_mutex:
                     try:
                         on_publish(self, self._userdata, mid)
-                    except Exception as err:
+                    except Exception as err:  # pylint: disable=broad-except
                         self._easy_log(LogLevels.ERR, "Caught exception in on_publish: {}", err)
                         if not self.suppress_exceptions:
                             raise
@@ -1038,7 +1037,7 @@ class MQTTProtocol(CallbackMixin, Protocol):
         if on_log := self.on_log:
             try:
                 on_log(self, self._userdata, level, buf)
-            except Exception:
+            except Exception:  # pylint: disable=broad-except
                 pass
         twisted_level = {
             LogLevels.DEBUG: LogLevel.debug,
@@ -1119,9 +1118,9 @@ class MQTTProtocol(CallbackMixin, Protocol):
             if self._pinger.active():
                 self._pinger.reset(self._keepalive)
             else:
-                self._pinger = Reactor.callLater(self._keepalive, self._send_pingreq)
+                self._pinger = Reactor.callLater(self._keepalive, self._send_pingreq)  # pylint: disable=no-member
         else:
-            self._pinger = Reactor.callLater(self._keepalive, self._send_pingreq)
+            self._pinger = Reactor.callLater(self._keepalive, self._send_pingreq)  # pylint: disable=no-member
 
     def _update_inflight(self) -> ErrorValues:
         # Don't lock message_mutex here

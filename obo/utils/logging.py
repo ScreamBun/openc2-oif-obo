@@ -21,12 +21,11 @@ def startLogging(console=True, filepath=None):
     Starts the global Twisted logger subsystem with maybe
     stdout and/or a file specified in the config file
     """
-    global logLevelFilterPredicate
-
     observers = []
     if console:
         observers.append(FilteringLogObserver(observer=textFileLogObserver(sys.stdout), predicates=[logLevelFilterPredicate]))
 
     if filepath is not None and filepath != "":
-        observers.append(FilteringLogObserver(observer=textFileLogObserver(open(filepath, 'a')), predicates=[logLevelFilterPredicate]))
+        with open(filepath, "a", encoding="utf-8") as f:
+            observers.append(FilteringLogObserver(observer=textFileLogObserver(f), predicates=[logLevelFilterPredicate]))
     globalLogBeginner.beginLoggingTo(observers)

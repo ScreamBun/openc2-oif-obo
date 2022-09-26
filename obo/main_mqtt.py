@@ -16,8 +16,8 @@ subs = [
 
 def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
     """Callback Receiving messages from message"""
-    print(f"msg={message.payload}")
-    print(f"userdata={userdata}")
+    log.info(f"msg={message.payload}")
+    log.info(f"userdata={userdata}")
     payload = {
         "headers": {
             "request_id": "bee2166a-caf3-45f6-975f-7c14f6c53356",
@@ -39,13 +39,11 @@ def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
 if __name__ == "__main__":
     config = get_config_data()
 
-    if config.mqtt:
-        print(config.mqtt)
-
     log = Logger()
     startLogging()
     setLogLevel(namespace='__main__', levelStr='debug')
     setLogLevel(namespace='mqtt', levelStr='debug')
+    log.info(f"{config.mqtt}")
 
     factory = MQTTFactory(
         reactor=reactor,

@@ -74,7 +74,7 @@ class MQTTFactory(ReconnectingClientFactory):
         self._broker = f"{self._addr.host}:{self._addr.port}"
         log.info("Build protocol for address: {addr}", addr=addr)
         self.protocol = MQTTProtocol(self, addr)
-        Reactor.callLater(0.5, self.connectToBroker)
+        Reactor.callLater(0.5, self.connectToBroker)  # pylint: disable=no-member
         return self.protocol
 
     def clientConnectionLost(self, connector: Any, reason: Failure) -> NoReturn:  # pylint: disable=W0237

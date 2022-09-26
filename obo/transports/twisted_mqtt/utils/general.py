@@ -170,4 +170,3 @@ def writeUTF(data: Union[bytes, str]) -> bytes:
     # data could be a string, or bytes. If string, encode into bytes with utf-8
     data = data if isinstance(data, bytes) else bytes(data, "utf-8")
     return writeInt16(len(data)) + data
-

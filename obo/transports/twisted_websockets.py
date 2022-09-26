@@ -27,8 +27,8 @@ class WebSocketProtocol(WebSocketServerProtocol):
         log.info("WebSocket connection closed: {reason}", reason=reason)
 
 
-def createWsConnectionStr(host: str, port: int) -> str:
-    return "ws://" + host + ":" + str(port)
+def createWsConnectionStr(host: str, port: int, secure: bool = False) -> str:
+    return f"ws{'s' if secure else ''}://{host}:{port}"
 
 
 def setupWebSocket(core: reactor, host: str, port: int) -> None:
@@ -39,7 +39,7 @@ def setupWebSocket(core: reactor, host: str, port: int) -> None:
 
 
 def setupWebSocketSSL(core: reactor, host: str, port: int, key: str, cert: str) -> None:
-    ws_connection = createWsConnectionStr(host, port)
+    ws_connection = createWsConnectionStr(host, port, True)
     factory = WebSocketServerFactory(ws_connection)
     factory.protocol = WebSocketProtocol
     core.listenSSL(port, factory, ssl.DefaultOpenSSLContextFactory(key, cert))

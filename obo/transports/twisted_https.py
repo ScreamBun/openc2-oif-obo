@@ -30,8 +30,7 @@ class WebProtocol(Resource):
             content_data = request.content.getvalue()
             json_dict = json.loads(content_data)
             json_formatted_str = json.dumps(json_dict, indent=2)
-            # log.info(json_formatted_str)  #TODO: Unable to log json objects
-            print(json_formatted_str)
+            log.info(json_formatted_str)
 
             # Do some work
 
