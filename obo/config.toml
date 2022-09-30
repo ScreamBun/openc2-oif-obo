@@ -14,3 +14,27 @@ log_level = "debug"
 host = "127.0.0.1"
 port = 9000
 log_level = "debug"
+
+[devices]
+
+[devices]
+name = "Yuuki1"
+profiles = ["sbom", "slpf"]
+platform = "mac"
+connection = "mqtt"
+host = '127.0.0.1'
+port = 1883
+client_id = ''
+username = ""
+password = ""
+
+[devices]
+name = "Yuuki2"
+profiles = ["database", "slpf"]
+platform = "mac"
+connection = "mqtt"
+host = '127.0.0.1'
+port = 1883
+client_id = ''
+username = ""
+password = ""
