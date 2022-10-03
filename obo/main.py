@@ -47,7 +47,7 @@ if __name__ == '__main__':
     level = "debug"
     for name in loggers:
         setLogLevel(namespace=name, levelStr=level)
-    log.info(f"{config}")
+    log.info("{config}", config=str(config))
 
     if config.https:
         log.info("Initializing HTTPS")

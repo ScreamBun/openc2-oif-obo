@@ -2,12 +2,10 @@ import os
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, NoReturn, Optional, Union
-from serde import serde
-from serde.toml import from_toml, to_toml
+from typing import List, Optional
+from .datafiles import TomlDataFile
 
 
-@serde
 @dataclass
 class MQTTConfig:
     client_id: str
@@ -20,9 +18,9 @@ class MQTTConfig:
     cert: Optional[str] = None
 
 
-@serde
 @dataclass
 class HTTPSConfig:
+    host: str
     port: int
     log_level: str
     paths: Optional[List[str]] = field(default_factory=list)
@@ -30,7 +28,6 @@ class HTTPSConfig:
     cert: Optional[str] = None
 
 
-@serde
 @dataclass
 class WebSocketsConfig:
     host: str
@@ -40,29 +37,27 @@ class WebSocketsConfig:
     cert: Optional[str] = None
 
 
-@serde
 @dataclass
-class Config:
+class Device:
+    name: str
+    profiles: List[str]
+    platform: str
+    connection: str
+    host: str
+    port: int
+    client_id: Optional[str]
+    username: Optional[str]
+    password: Optional[str]
+
+
+@dataclass
+class Config(TomlDataFile):
     # Transport Config
     https: Optional[HTTPSConfig] = None
     mqtt: Optional[MQTTConfig] = None
     websockets: Optional[WebSocketsConfig] = None
-    # Config Path
-    __path__: Union[bytes, str, os.PathLike] = field(repr=False, default=None, metadata={'serde_skip': True})
-
-    @classmethod
-    def load(cls, path: Union[bytes, str, os.PathLike]) -> "Config":
-        with open(path, "r", encoding="utf-8") as f:
-            cfg = from_toml(cls, f.read())
-        cfg.__path__ = path
-        return cfg
-
-    def dump(self, path: Optional[Union[bytes, str, os.PathLike]] = None) -> NoReturn:
-        path = path or self.__path__
-        if path is None:
-            raise IOError("Config path is not specified")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(to_toml(self))
+    # Device Config
+    devices: List[Device] = None
 
 
 def get_config_data() -> Config:

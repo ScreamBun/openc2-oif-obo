@@ -6,18 +6,16 @@ log_level = "debug"
 
 [mqtt]
 client_id = "OC2-Twisted-368207455685"
-host = "mosquito.olympus.mtn"
+host = "mosquitto.olympus.mtn"
 port = 1883
 log_level = "debug"
 
 [websockets]
 host = "127.0.0.1"
-port = 9000
+port = 8081
 log_level = "debug"
 
-[devices]
-
-[devices]
+[[devices]]
 name = "Yuuki1"
 profiles = ["sbom", "slpf"]
 platform = "mac"
@@ -28,7 +26,7 @@ client_id = ''
 username = ""
 password = ""
 
-[devices]
+[[devices]]
 name = "Yuuki2"
 profiles = ["database", "slpf"]
 platform = "mac"

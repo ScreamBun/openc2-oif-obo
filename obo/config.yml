@@ -1,0 +1,42 @@
+https:
+    host: "localhost"
+    port: 8080
+    paths:
+    - "getOc2Cmd"
+    - "postOc2Cmd"
+    log_level: "debug"
+
+mqtt:
+    client_id: "OC2-Twisted-368207455685"
+    host: "mosquitto.olympus.mtn"
+    port: 1883
+    log_level: "debug"
+
+websockets:
+    host: "127.0.0.1"
+    port:  8081
+    log_level: "debug"
+
+devices:
+    - name: "Yuuki1"
+      profiles:
+      - "sbom"
+      - "slpf"
+      platform: "mac"
+      connection: "mqtt"
+      host: '127.0.0.1'
+      port: 1883
+      client_id: ''
+      username: ""
+      password: ""
+    - name: "Yuuki2"
+      profiles:
+      - "database"
+      - "slpf"
+      platform: "mac"
+      connection: "mqtt"
+      host: '127.0.0.1'
+      port: 1883
+      client_id: ''
+      username: ""
+      password: ""
