@@ -15,8 +15,7 @@ host = "127.0.0.1"
 port = 8081
 log_level = "debug"
 
-[[devices]]
-name = "Yuuki1"
+[devices.Yuuki1]
 profiles = ["sbom", "slpf"]
 platform = "mac"
 connection = "mqtt"
@@ -26,8 +25,7 @@ client_id = ''
 username = ""
 password = ""
 
-[[devices]]
-name = "Yuuki2"
+[devices.Yuuki2]
 profiles = ["database", "slpf"]
 platform = "mac"
 connection = "mqtt"

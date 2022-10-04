@@ -2,7 +2,7 @@ import os
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 from .datafiles import TomlDataFile
 
 
@@ -39,7 +39,6 @@ class WebSocketsConfig:
 
 @dataclass
 class Device:
-    name: str
     profiles: List[str]
     platform: str
     connection: str
@@ -52,12 +51,12 @@ class Device:
 
 @dataclass
 class Config(TomlDataFile):
+    # Device Config
+    devices: Dict[str, Device]
     # Transport Config
     https: Optional[HTTPSConfig] = None
     mqtt: Optional[MQTTConfig] = None
     websockets: Optional[WebSocketsConfig] = None
-    # Device Config
-    devices: List[Device] = None
 
 
 def get_config_data() -> Config:
