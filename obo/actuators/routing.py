@@ -1,7 +1,9 @@
-from obo.oc2_arch.openc2_types import OpenC2CmdFields, OpenC2RspFields, OpenC2Headers, OpenC2Msg
+from obo.openc2_types import OpenC2CmdFields, OpenC2RspFields, OpenC2Headers, OpenC2Msg
 
 from dataclasses import dataclass
+from obo.utils import get_config_data, setLogLevel, startLogging
 import toml
+from obo.utils.datafiles import TomlDataFile
 from typing import Any, Callable, Dict, List, Union, Optional
 import time
 import json
@@ -9,19 +11,17 @@ import json
 from actuator import Actuator
 routing = Actuator(nsid='routing')
 
-# load toml config file
-with open("config.toml", "rb") as f:
-    data = toml.load(f)
-
-downstream_devices = {["Yuuki1", "0001", ["sbom", "slpf"], "mac"], ["Yuuki2", "0002", ["database", "slpf"], "mac"]} # hc for now
-# for k,v in downstream, create object for device
+Config = get_config_data()
+downstream_devices = Config.devices
+print(downstream_devices)
 
 
 @routing.pair('query', 'pac')
 def query_pac(input_cmd: OpenC2CmdFields) -> OpenC2RspFields:
 
     subtarget = input_cmd.target.get("pac", None)
-    deriv_cmd_fields = ("query", subtarget, input_cmd.args, input_cmd.profile, input_cmd.command_id)
+    deriv_cmd_fields = OpenC2CmdFields(action="query", target=subtarget, args=input_cmd.args,
+                                       profile=input_cmd.profile, command_id=input_cmd.command_id)
 
     if subtarget is None:
         status_text = f'No PAC target Specified'
@@ -44,6 +44,8 @@ def query_pac(input_cmd: OpenC2CmdFields) -> OpenC2RspFields:
             # send d_msg
             # receive response from downstream device
             # collect responses
+
+
 
 
         r = "Device Allowed" + c
@@ -94,24 +96,29 @@ def find_targets(profile: str) -> list[str]:
     for d in downstream_devices:
         if d.__getattribute__("profiles").contains("er"):
             targeted_devices.append(d.__getattribute__("name"))
+            print("targets found: "+str(targeted_devices))
     # if no actuators match, tough luck, itll get figured out upstairs
     return targeted_devices
 
 
-def relayed_command(self, headers: OpenC2Headers, body: OpenC2CmdFields, encode: str) -> OpenC2CmdFields:
-    pass
+def relayed_command(body: OpenC2CmdFields, encode: str) -> OpenC2CmdFields:
+
+    rc = body
+    return rc
 
 
-def derived_command(self, headers: OpenC2Headers, body: OpenC2CmdFields, encode: str) -> OpenC2CmdFields:
+def derived_command(body: OpenC2CmdFields, encode: str) -> OpenC2CmdFields:
 
-    return OpenC2CmdFields()
+    dc = body
+    return dc
 
 
-def construct_msg(self, headers: OpenC2Headers, body: OpenC2CmdFields) -> OpenC2Msg:
+def construct_msg(headers: OpenC2Headers, body: OpenC2CmdFields) -> OpenC2Msg:
 
     # collect headers and cmd fields into one message
+    msg = OpenC2Msg(headers, body)
 
-    return OpenC2Msg()
+    return msg
 
 
 def target_headers(device, c_id) -> OpenC2Headers:
@@ -124,15 +131,4 @@ def target_headers(device, c_id) -> OpenC2Headers:
 
     return return_headers
 
-@dataclass
-class connected_device:
-    name : str
-    profiles: list[str]
-    platform: str
-    connection: str
-    host: str
-    port: int
-    client_id: str
-    username: str
-    password: str
 

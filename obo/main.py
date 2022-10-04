@@ -9,6 +9,10 @@ from transports.twisted_https import setupWebServer, setupWebServerSSL
 from transports.twisted_mqtt import MQTTFactory, MQTTMessage, MQTTProtocol, MQTTService, Versions
 from transports.twisted_websockets import setupWebSocket, setupWebSocketSSL
 from utils import get_config_data, setLogLevel, startLogging
+#actuator imports
+from actuators import routing, actuator
+#oc2 types
+from openc2_types import OpenC2CmdFields, OpenC2RspFields, OpenC2Headers, OpenC2Msg, OpenC2Body, OpenC2Rsp
 
 subs = [
     ("oc2/cmd", 1),
@@ -20,6 +24,18 @@ def onMessage(proto: MQTTProtocol, userdata: Any, message: MQTTMessage):
     """Callback Receiving messages from message"""
     print(f"msg={message.payload}")
     print(f"userdata={userdata}")
+
+    try:
+        openc2_msg = OpenC2Msg(**message)
+    except ValidationError as e:
+        # logging.error(e)
+        openc2_rsp = OpenC2RspFields(status=500, status_text='Malformed OpenC2 message')
+        return self.create_response_msg(openc2_rsp, encode=encode)
+    except KeyError as e:
+        # logging.error(e)
+        openc2_rsp = OpenC2RspFields(status=500, status_text='Malformed OpenC2 message')
+        return self.create_response_msg(openc2_rsp, encode=encode)
+
     payload = {
         "headers": {
             "request_id": "bee2166a-caf3-45f6-975f-7c14f6c53356",
@@ -87,3 +103,32 @@ if __name__ == '__main__':
 
     log.info("Reactor Running")
     reactor.run()
+
+
+    def create_response_msg(self, response_body,  encode: str, headers: OpenC2Headers = None) -> Union[str, bytes]:
+        """
+        Creates and serializes an OpenC2 Response.
+        :param response_body: Information to populate OpenC2 Response fields.
+        :param headers: Information to populate OpenC2 Response headers.
+        :param encode: String specifying the serialization format for the Response.
+        :return: Serialized OpenC2 Response
+        """
+        print("creating response")
+
+        if headers is None:
+            # print("debugging: no headers")
+            headers = OpenC2Headers(from_="Yuuki")
+
+        else:
+            # print("debugging: found headers")
+            headers = OpenC2Headers(
+                request_id=headers.request_id,
+                from_="Yuuki",
+                to=headers.from_,
+                created=round(time() * 1000)
+            )
+
+        message = OpenC2Msg(headers=headers, body=OpenC2Body(openc2=OpenC2Rsp(response=response_body)))
+        response = message.dict(by_alias=True, exclude_unset=True, exclude_none=True)
+        print("debugging: response on the way")
+        return self.serializations[encode].serialize(response)

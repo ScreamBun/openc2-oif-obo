@@ -48,7 +48,7 @@ class OpenC2CmdFields(BaseModel, extra=Extra.forbid):
     args: Optional[OpenC2CmdArgs]
     profile: Optional[Dict[str, Dict[str, Any]]]
     command_id: Optional[str]
-
+"""
     @validator('target', 'actuator')
     def validate_choice_length(cls, choice: Dict):
         if len(choice) != 1:
@@ -65,7 +65,7 @@ class OpenC2CmdFields(BaseModel, extra=Extra.forbid):
             return None
         else:
             return next(iter(self.actuator))
-
+"""
 
 class OpenC2Cmd(BaseModel, extra=Extra.forbid):
     request: OpenC2CmdFields

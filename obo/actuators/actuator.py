@@ -2,7 +2,7 @@
 https://docs.oasis-open.org/openc2/oc2ls/v1.0/oc2ls-v1.0.html
 """
 from typing import Callable, Dict, List, NoReturn
-from obo.oc2_arch.openc2_types import OpenC2CmdFields, OpenC2RspFields
+from obo.openc2_types import OpenC2CmdFields, OpenC2RspFields
 
 OpenC2Function = Callable[[OpenC2CmdFields], OpenC2RspFields]
 
