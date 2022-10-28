@@ -2,7 +2,9 @@ import time
 import paho.mqtt.client as paho
 
 # broker = "localhost"
-broker="mosquitto.olympus.mtn"
+broker="mosquitto.olympus.mtn" # Local Test Broker
+# broker="test.mosquitto.org" # External Test Broker
+# broker="35.221.11.97"  # Kevin's laptop
 
 # def on_message(client, userdata, message):
 #     time.sleep(1)
